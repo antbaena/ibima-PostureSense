@@ -14,14 +14,14 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(
             os.path.join(launch_file_dir, 'gemini_330_series.launch.py')
         ),
-        launch_arguments={
+        launch_arguments={ #335
             'camera_name': 'camera_01',
             # 'usb_port': '2-1.1',
-            'serial_number': 'CP32942000RH',
+            'serial_number': 'CP32942000G0',
             'device_num': '2',
             'sync_mode': 'standalone',
-            'color_fps': '15',
-            'depth_fps': '15',
+            'color_fps': '5',
+            'depth_fps': '5',
         }.items()
     )
 
@@ -29,14 +29,14 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(
             os.path.join(launch_file_dir, 'gemini_330_series.launch.py')
         ),
-        launch_arguments={
+        launch_arguments={ #336
             'camera_name': 'camera_02',
             # 'usb_port': '2-1.2.1',
-            'serial_number': 'CPCS253000SK',
+            'serial_number': 'CPCS2530001K',
             'device_num': '2',
             'sync_mode': 'standalone',
-            'color_fps': '15',
-            'depth_fps': '15',
+            'color_fps': '5',
+            'depth_fps': '5',
         }.items()
     )
 

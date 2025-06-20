@@ -1,7 +1,7 @@
 from setuptools import find_packages, setup
 import os
 from glob import glob
-package_name = 'orbbec_dual_launch'
+package_name = 'camera_postprocess'
 
 setup(
     name=package_name,
@@ -22,6 +22,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-        ],
+            'movenet_3d_node = camera_postprocess.movenet_3d_node:main',   
+                     ],
     },
 )
