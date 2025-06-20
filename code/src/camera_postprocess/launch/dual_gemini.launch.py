@@ -1,7 +1,6 @@
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, GroupAction, ExecuteProcess
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, GroupAction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 import os
 
@@ -10,18 +9,48 @@ def generate_launch_description():
     # Include launch files
     package_dir = get_package_share_directory('orbbec_camera')
     launch_file_dir = os.path.join(package_dir, 'launch')
+
+    common_args = {
+        'device_num': '2',
+        'sync_mode': 'standalone',
+        'color_fps': '5',
+        'depth_fps': '5',
+        'color_width': '424',
+        'color_height': '240',
+        'depth_width': '424',
+        'depth_height': '240',
+
+        # Compresión + menos ancho de banda
+        'color_format': 'MJPG',
+        'depth_format': 'Y16',
+
+        # Desactiva streams extra
+        'enable_point_cloud': 'false',
+        'enable_colored_point_cloud': 'false',
+        'enable_left_ir': 'false',
+        'enable_right_ir': 'false',
+
+        # Filtros desactivados
+        'enable_temporal_filter': 'false',
+        'enable_spatial_filter': 'false',
+        'enable_hole_filling_filter': 'false',
+        'enable_threshold_filter': 'false',
+        'enable_decimation_filter': 'false',
+        'enable_noise_removal_filter': 'true',  # este puede ayudar con ruido sin penalizar mucho
+
+        # Extra rendimiento
+        'publish_tf': 'false',
+        'enable_3d_reconstruction_mode': 'false',
+    }
+
     launch1_include = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(launch_file_dir, 'gemini_330_series.launch.py')
         ),
-        launch_arguments={ #335
+        launch_arguments={
+            **common_args,
             'camera_name': 'camera_01',
-            # 'usb_port': '2-1.1',
             'serial_number': 'CP32942000G0',
-            'device_num': '2',
-            'sync_mode': 'standalone',
-            'color_fps': '5',
-            'depth_fps': '5',
         }.items()
     )
 
@@ -29,23 +58,14 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(
             os.path.join(launch_file_dir, 'gemini_330_series.launch.py')
         ),
-        launch_arguments={ #336
+        launch_arguments={
+            **common_args,
             'camera_name': 'camera_02',
-            # 'usb_port': '2-1.2.1',
             'serial_number': 'CPCS2530001K',
-            'device_num': '2',
-            'sync_mode': 'standalone',
-            'color_fps': '5',
-            'depth_fps': '5',
         }.items()
     )
 
-    # If you need more cameras, just add more launch_include here, and change the usb_port and device_num
-
-    # Launch description
-    ld = LaunchDescription([
+    return LaunchDescription([
         GroupAction([launch1_include]),
         GroupAction([launch2_include]),
     ])
-
-    return ld
