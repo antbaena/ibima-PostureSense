@@ -3,3 +3,5 @@ code/install
 code/log
 code/Log
 code/log.txt
+code/src/camera_postprocess/camera_postprocess/dataset/
+__pycache__/

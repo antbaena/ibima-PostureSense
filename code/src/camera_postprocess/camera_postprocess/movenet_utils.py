@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 import copy
-
 import cv2 as cv
 import numpy as np
 import tensorflow as tf
@@ -31,25 +30,24 @@ def preprocess_image(image, input_size):
 
 def run_inference_on_image(image, input_size, model):
     """Ejecuta el modelo sobre la imagen preprocesada.
-    Retorna dos listas: una de keypoints y otra de scores.
-    """
+    Retorna dos listas: una de keypoints y otra de scores (listas de detección, aquí siempre 1)."""
+    # Preprocesar
     input_image, image_width, image_height = preprocess_image(image, input_size)
     outputs = model(input_image)
-    keypoints_with_scores = outputs["output_0"].numpy().squeeze()
-    keypoints_list = []
-    scores_list = []
-    for kp_with_score in keypoints_with_scores:
-        keypoints = []
-        scores = []
-        for i in range(17):  # Se asume que se detectan 17 keypoints
-            x = int(image_width * kp_with_score[i * 3 + 1])
-            y = int(image_height * kp_with_score[i * 3 + 0])
-            score = kp_with_score[i * 3 + 2]
-            keypoints.append((x, y))
-            scores.append(score)
-        keypoints_list.append(keypoints)
-        scores_list.append(scores)
-    return keypoints_list, scores_list
+    # output_0 shape: [1,1,17,3] => squeeze a (17,3)
+    kps = outputs["output_0"].numpy().squeeze()  # shape (17,3): [y_rel, x_rel, score]
+
+    # Reconstruir coordenadas y scores
+    keypoints = []
+    scores = []
+    for y_rel, x_rel, sc in kps:
+        x = int(image_width * x_rel)
+        y = int(image_height * y_rel)
+        keypoints.append((x, y))
+        scores.append(float(sc))
+
+    # Devolver en lista (batch de detecciones)
+    return [keypoints], [scores]
 
 
 def process_detections(
@@ -57,7 +55,7 @@ def process_detections(
 ):
     """Filtra las detecciones descartando aquellas con menos de 'min_keypoints' válidos."""
     valid_detections = []
-    for keypoints, scores in zip(keypoints_list, scores_list, strict=False):
+    for keypoints, scores in zip(keypoints_list, scores_list):
         count_valid = sum([1 for score in scores if score > keypoint_score_threshold])
         if count_valid >= min_keypoints:
             valid_detections.append((keypoints, scores))
@@ -132,7 +130,7 @@ def draw_skeleton(image, keypoints, scores, keypoint_score_threshold):
             pt2 = keypoints[j]
             cv.line(annotated, pt1, pt2, (0, 0, 0), 2)
             cv.line(annotated, pt1, pt2, (255, 255, 255), 4)
-    for pt, score in zip(keypoints, scores, strict=False):
+    for pt, score in zip(keypoints, scores):
         if score > keypoint_score_threshold:
             cv.circle(annotated, pt, 6, (0, 0, 0), -1)
             cv.circle(annotated, pt, 3, (255, 255, 255), -1)

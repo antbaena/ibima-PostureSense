@@ -23,6 +23,7 @@ setup(
     entry_points={
         'console_scripts': [
             'movenet_3d_node = camera_postprocess.movenet_3d_node:main',   
+            'image_saver_node = camera_postprocess.image_saver_node:main',
                      ],
     },
 )
