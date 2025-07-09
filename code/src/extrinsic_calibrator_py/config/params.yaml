@@ -21,5 +21,4 @@ detector_aruco_node:
     frame_ids:
       - "camera1_link"
       - "camera2_link"
-      - "camera3_link"
-      - "camera4_link"
+      - "camera3_link"      - "camera4_link"
