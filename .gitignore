@@ -5,3 +5,4 @@ code/Log
 code/log.txt
 code/src/camera_postprocess/camera_postprocess/dataset/
 __pycache__/
+code/test_sync_4cams_compressed

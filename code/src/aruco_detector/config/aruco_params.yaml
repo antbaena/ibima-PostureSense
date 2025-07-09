@@ -1,0 +1,16 @@
+aruco_detector_node:
+  ros__parameters:
+    # Lista de topics de cámara de entrada (sensor_msgs/Image)
+    input_topics:
+      - "/cam00/camera_00/color/image_raw/decompressed"
+      - "/cam00/camera_01/color/image_raw/decompressed"
+      - "/cam01/camera_02/color/image_raw/decompressed"
+      - "/cam02/camera_03/color/image_raw/decompressed"
+    # Lista paralela de topics de salida (sensor_msgs/Image) con detecciones dibujadas
+    output_topics:
+      - "/cam00/camera_00/color/image_raw/aruco_detections"
+      - "/cam00/camera_01/color/image_raw/aruco_detections"
+      - "/cam01/camera_02/color/image_raw/aruco_detections"
+      - "/cam02/camera_03/color/image_raw/aruco_detections"
+    # Tipo de diccionario ArUco (puedes cambiar a otro)
+    dictionary_id: 5  # cv2.aruco.DICT_6X6_250
