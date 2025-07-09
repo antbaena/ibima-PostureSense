@@ -1,0 +1,25 @@
+detector_aruco_node:
+  ros__parameters:
+    aruco_dictionary: "DICT_5X5_250"
+    marker_length: 0.05
+
+    camera_names:
+      - "cam1"
+      - "cam2"
+      - "cam3"
+      - "cam4"
+    image_topics:
+      - "/cam00/camera_00/color/image_raw/decompressed"
+      - "/cam00/camera_01/color/image_raw/decompressed"
+      - "/cam01/camera_02/color/image_raw/decompressed"
+      - "/cam02/camera_03/color/image_raw/decompressed"
+    info_topics:
+      - "/cam00/camera_00/color/camera_info"
+      - "/cam00/camera_01/color/camera_info"
+      - "/cam01/camera_02/color/camera_info"
+      - "/cam02/camera_03/color/camera_info"
+    frame_ids:
+      - "camera1_link"
+      - "camera2_link"
+      - "camera3_link"
+      - "camera4_link"
