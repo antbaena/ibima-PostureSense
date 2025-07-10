@@ -24,6 +24,7 @@ setup(
     entry_points={
         'console_scripts': [
             'aruco_detector_node = aruco_detector.aruco_detector_node:main',
+            'aruco_3d_node = aruco_detector.aruco_3d_node:main',
         ],
     },
 )
