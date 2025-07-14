@@ -1,214 +1,173 @@
-# Implementación de la clase Camera integrando umbrales adaptativos, filtrado, scoring, rescate y timeout adaptativo
+# Versión refinada del sistema de detección ArUco robusto para calibración extrínseca
 from rclpy.node import Node
 from sensor_msgs.msg import Image, CameraInfo
 from cv_bridge import CvBridge
 import cv2
 import numpy as np
-from .marker import Marker
-import tf2_ros
+from collections import deque
 import time
+
+class Marker:
+    def __init__(self, marker_id, max_history=50, alpha=0.1):
+        self.id = marker_id
+        self.tvec = None
+        self.rvec = None
+        self.area = None
+        self.tf = None  # This will be set when the marker is reliable
+        self.state = 'pending'  # pending, reliable, rejected, dead
+        self.first_seen = time.time()
+        self.last_seen = self.first_seen
+        self.history = deque(maxlen=max_history)
+        self.alpha = alpha
+        self.score = 0.0
+
+    def add_observation(self, tvec, rvec, area):
+        ts = time.time()
+        self.history.append({'tvec': np.array(tvec).flatten(), 'rvec': np.array(rvec).flatten(), 'area': area, 'ts': ts})
+        self.last_seen = ts
+        self._update_score()
+
+    def _update_score(self):
+        n = len(self.history)
+        score_count = min(1.0, n / 10.0)
+        tvecs = np.stack([h['tvec'] for h in self.history])
+        areas = np.array([h['area'] for h in self.history])
+        var_t = np.mean(np.var(tvecs, axis=0))
+        var_a = float(np.var(areas))
+        var_score = np.exp(-(var_t + var_a) / 500.0)
+        combined = 0.5 * score_count + 0.5 * var_score
+        self.score = (1 - self.alpha) * self.score + self.alpha * combined
+
+    def evaluate(self, reliable_thresh=0.85, reject_var_thresh=500.0, dead_timeout=10.0):
+        if self.state in ['reliable', 'rejected', 'dead']:
+            return self.state
+        age = time.time() - self.first_seen
+        if self.score >= reliable_thresh:
+            self.state = 'reliable'
+            tvec_avg = np.stack([h['tvec'] for h in self.history])
+            self.tvec = np.mean(tvec_avg, axis=0)
+            rvec_avg = np.stack([h['rvec'] for h in self.history])
+            self.rvec = np.mean(rvec_avg, axis=0)
+            area_avg = np.mean([h['area'] for h in self.history])
+            self.area = area_avg
+            self.tf = np.eye(4)
+            self.tf[:3, :3] = cv2.Rodrigues(self.rvec)[0]
+            self.tf[:3, 3] = self.tvec
+
+        elif len(self.history) >= self.history.maxlen and \
+                (np.mean(np.var(np.stack([h['tvec'] for h in self.history]), axis=0)) + np.var([h['area'] for h in self.history])) > reject_var_thresh:
+            self.state = 'rejected'
+        elif age > dead_timeout:
+            self.state = 'dead'
+        return self.state
+
+class MarkerTracker:
+    def __init__(self, camera_matrix, dist_coeffs, marker_length):
+        self.K = camera_matrix
+        self.D = dist_coeffs
+        self.L = marker_length
+        self.states = {}
+        self.reliable_markers = {}
+        h = marker_length / 2
+        self.objp = np.array([[-h, h, 0], [h, h, 0], [h, -h, 0], [-h, -h, 0]], dtype=np.float32)
+
+    def process(self, corners, ids, markers : dict):
+        if ids is None:
+            return False
+        for c, id_arr in zip(corners, ids.flatten()):
+            id_ = int(id_arr)
+
+            marker = markers.setdefault(id_, Marker(id_))
+            if marker.state in ['rejected', 'dead', 'reliable']:
+                continue
+
+            succ, rvec, tvec, inliers = cv2.solvePnPRansac(
+                self.objp, c, self.K, self.D, flags=cv2.SOLVEPNP_ITERATIVE,
+                reprojectionError=4.0, iterationsCount=100, confidence=0.99)
+            if not succ:
+                continue
+
+            area = cv2.contourArea(c.reshape(4, 2))
+
+            marker.add_observation(tvec, rvec, area)
+            [marker.evaluate() for marker in markers.values()]
+
+        return True
 
 
 class Camera:
     def __init__(self, node: Node, camera_name: str, camera_id: int, image_topic: str, camera_info_topic: str,
-                 marker_length: float, aruco_dict_name: str, camera_frame_id: str, verbose=True):
+                 marker_length: float, aruco_dict_name: str,camera_frame_id: str = None):
         self.node = node
         self.camera_name = camera_name
-        self.camera_id = camera_id
         self.image_topic = image_topic
         self.camera_info_topic = camera_info_topic
+        self.marker_length = marker_length
         self.bridge = CvBridge()
-        self.verbose = verbose
-        self.camera_frame_id = camera_frame_id
-
-        # Umbrales base y adaptativos
-        self.base_distance_threshold = 5.5
-        self.base_area_threshold = 300
-        self.adaptive_distance_threshold = self.base_distance_threshold
-        self.adaptive_area_threshold = self.base_area_threshold
-        # Factores de margen (por ejemplo, permitir hasta un 20% más de distancia y un 20% menor de área)
-        self.distance_factor = 1.2
-        self.area_factor = 0.8
-
-        self.diff_threshold = 0.1  # Para usar en el cálculo del timeout adaptativo
-
-        self.rejected_timeout = 3.0    # Tiempo de rechazo en segundos
-        # Tiempo máximo (en segundos) para intentar que un marcador se vuelva reliable
-        self.max_attempt_time = 60.0
-
-        self.node.get_logger().info(f"Camera {self.camera_name} created.")
+        self.camera_id = camera_id
+        self.camera_frame_id = camera_frame_id 
+        self.can_camera_connect_two_markers_table = None
 
         self.camera_matrix = None
         self.dist_coeffs = None
-        self.marker_length = marker_length
+        self.markers = {}
 
-        # Configuración de detección ArUco
-        self.aruco_dict = cv2.aruco.getPredefinedDictionary(
-            getattr(cv2.aruco, aruco_dict_name))
+        self.aruco_dict = cv2.aruco.getPredefinedDictionary(getattr(cv2.aruco, aruco_dict_name))
         self.parameters = cv2.aruco.DetectorParameters()
-        self.parameters.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
-        self.detector = cv2.aruco.ArucoDetector(
-            self.aruco_dict, self.parameters)
+        self.parameters.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_CONTOUR
+        self.detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.parameters)
 
-        # Precomputar los puntos objeto del marcador (suponiendo un marcador centrado y cuadrado)
-        half_length = self.marker_length / 2.0
-        self.obj_points = np.array([[-half_length,  half_length, 0],
-                                    [half_length,  half_length, 0],
-                                    [half_length, -half_length, 0],
-                                    [-half_length, -half_length, 0]], dtype=np.float32)
+        self.image_sub = self.node.create_subscription(Image, image_topic, self.image_callback, 1)
+        self.camera_info_sub = self.node.create_subscription(CameraInfo, camera_info_topic, self.camera_info_callback, 1)
+        self.cv2_image_publisher = self.node.create_publisher(Image, f"{image_topic}/debug", 10)
 
-        # Subscripciones y publicación de imágenes con detecciones
-        self.image_sub = self.node.create_subscription(
-            Image, image_topic, self.image_callback, 1)
-        self.camera_info_sub = self.node.create_subscription(
-            CameraInfo, camera_info_topic, self.camera_info_callback, 1)
-        self.cv2_image_publisher = self.node.create_publisher(
-            Image, f"{image_topic}/detected_markers", 10)
-
-        self.markers = {}         # Marcadores válidos: {marker_id: Marker}
-        self.rejected_markers = {}  # Marcadores rechazados: {marker_id: timestamp_rechazo}
-        self.dead_markers = {}      # Marcadores que excedieron el tiempo máximo de intento
-        self.node.get_logger().info(
-            f"Camera {self.camera_name} initialized with ArUco parameters: {aruco_dict_name}, marker length: {marker_length}m.")
+        self.marker_tracker = None
+        self.last_seen_time = time.time()
 
     def camera_info_callback(self, msg):
-        if self.camera_matrix is None:
-            self.camera_matrix = np.array(msg.k).reshape((3, 3))
-            self.dist_coeffs = np.array(msg.d)
-            self.node.get_logger().info(
-                f"Camera {self.camera_name} parameters received.")
+        self.camera_matrix = np.array(msg.k).reshape((3, 3))
+        self.dist_coeffs = np.array(msg.d)
+        self.marker_tracker = MarkerTracker(self.camera_matrix, self.dist_coeffs, self.marker_length)
+        self.node.destroy_subscription(self.camera_info_sub)
+        self.camera_info_sub = None
 
     def image_callback(self, msg):
         if self.camera_matrix is None or self.dist_coeffs is None:
-            self.node.get_logger().warn(
-                f"Camera {self.camera_name} parameters not yet received.")
             return
 
         current_time = time.time()
         cv_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
         gray = cv2.cvtColor(cv_image, cv2.COLOR_BGR2GRAY)
-
-        # Apply Gaussian blur to reduce noise
         gray_filtered = cv2.GaussianBlur(gray, (5, 5), 0)
 
         corners, ids, _ = self.detector.detectMarkers(gray_filtered)
-        if ids is None:
+
+        if ids is None or len(ids) == 0:
+            if current_time - self.last_seen_time > 10.0:
+                self.node.get_logger().fatal(f"{self.camera_name}: No markers detected in the last 10 seconds. Shutting down.")
             return
+        self.last_seen_time = current_time
 
-        for i, id_arr in enumerate(ids):
-            marker_id = int(id_arr[0])
-            # Omitir marcadores que ya han sido marcados como dead
-            if marker_id in self.dead_markers:
-                self.node.get_logger().debug(
-                    f"Camera {self.camera_name}: Marcador {marker_id} marcado como dead, se omite.")
-                continue
+        self.marker_tracker.process(corners, ids, self.markers)
 
-            corner = corners[i].reshape((4, 2))
-            success, rvec, tvec = cv2.solvePnP(
-                self.obj_points, corners[i], self.camera_matrix, self.dist_coeffs)
-            if not success:
-                continue
 
-            distance = np.linalg.norm(tvec)
-            area = cv2.contourArea(corner)
-
-            if distance < 0.1 or area < 10 or distance > 100 or area > 10000:
-                self.node.get_logger().warn(
-                    f"Camera {self.camera_name}: Marcador {marker_id} descartado por distancia o área fuera de rango.")
-                continue
-
-            # Validación adaptativa del marcador
-            if not self._is_marker_valid(distance, area):
-                self._reject_marker(marker_id, current_time)
-                if marker_id in self.markers:
-                    self.node.get_logger().info(
-                        f"Camera {self.camera_name}: Marcador {marker_id} removido de la lista de válidos.")
-                    # self.node.get_logger().info(f"Camera {self.camera_name}: Distancia: {distance:.2f}, Área: {area:.2f}")
-                    del self.markers[marker_id]
-                continue
-            else:
-                # Actualizar umbrales adaptativos con la detección válida
-                # self._update_adaptive_thresholds(distance, area)
-                # "Rescatar" el marcador si estaba en la lista de rechazados y ya pasó el timeout de rechazo
-                if marker_id in self.rejected_markers and (current_time - self.rejected_markers[marker_id] > self.rejected_timeout):
-                    del self.rejected_markers[marker_id]
-
-                if marker_id not in self.markers:
-                    self.markers[marker_id] = Marker(
-                        marker_id, self.marker_length, timeout=5.0)
-                # Convertir la solución de PnP en una matriz de transformación 4x4
-                rot_matrix, _ = cv2.Rodrigues(rvec)
-                translation_matrix = np.eye(4)
-                translation_matrix[:3, :3] = rot_matrix
-                translation_matrix[:3, 3] = tvec.flatten()
-                self.markers[marker_id].update(translation_matrix)
-
-                if self.verbose:
-                    cv2.aruco.drawDetectedMarkers(cv_image, corners, ids)
-                    cv2.drawFrameAxes(
-                        cv_image, self.camera_matrix, self.dist_coeffs, rvec, tvec, self.marker_length / 2)
-                    try:
-                        ros_image = self.bridge.cv2_to_imgmsg(cv_image, "bgr8")
-                        self.cv2_image_publisher.publish(ros_image)
-                    except Exception as e:
-                        self.node.get_logger().error(
-                            f"Camera {self.camera_name}: Error publishing image: {e}")
-        # self.node.get_logger().info(f"Parametros adaptativos: Distancia: {self.adaptive_distance_threshold:.2f}, Área: {self.adaptive_area_threshold:.2f}")
-        self._update_marker_status(current_time)
-
-    def _is_marker_valid(self, distance: float, area: float) -> bool:
-        valid_distance = distance <= self.adaptive_distance_threshold * self.distance_factor
-        valid_area = area >= self.adaptive_area_threshold * self.area_factor
-        return valid_distance and valid_area
-
-    def _reject_marker(self, marker_id: int, current_time: float):
-        self.rejected_markers[marker_id] = current_time
-
-    def _update_adaptive_thresholds(self, distance: float, area: float, alpha: float = 0.1):
-        # Actualiza los umbrales adaptativos usando un promedio móvil exponencial
-        self.adaptive_distance_threshold = (
-            1 - alpha) * self.adaptive_distance_threshold + alpha * distance
-        self.adaptive_area_threshold = (
-            1 - alpha) * self.adaptive_area_threshold + alpha * area
-
-    def _update_marker_status(self, current_time: float):
-        for marker_id in list(self.markers):
-            marker = self.markers[marker_id]
-            # Calcular un timeout efectivo en función de la variabilidad: a mayor inestabilidad, menor timeout
-            ratio = min(marker.variability / self.diff_threshold,
-                        0.5) if self.diff_threshold > 0 else 0
-            effective_timeout = self.max_attempt_time * (1 - ratio)
-            if marker.is_timed_out():
-                self.node.get_logger().warn(
-                    f"Camera {self.camera_name}: Marcador {marker_id} timed out, removiendo de tracking.")
-                del self.markers[marker_id]
-            elif not marker.reliable:
-                if marker.is_precise():
-                    marker.reliable = True
-                    self.node.get_logger().info(
-                        f"Camera {self.camera_name}: Marcador {marker_id} ahora es reliable.")
-                elif (current_time - marker.first_seen) > effective_timeout:
-                    self.node.get_logger().warn(
-                        f"Camera {self.camera_name}: El marcador {marker_id} excedió el tiempo máximo de intento para volverse reliable. Marcándolo como dead."
-                    )
-                    self.dead_markers[marker_id] = current_time
-                    del self.markers[marker_id]
-
-    def are_all_transforms_precise(self) -> bool:
+    def are_all_transforms_precise(self, precise_thresh=0.85) -> bool:
         if not self.markers:
-            self.node.get_logger().warn(
-                f"Camera {self.camera_name}: No se han detectado marcadores.")
+            self.node.get_logger().warn(f"{self.camera_name}: No hay marcadores activos.")
+            return False
+                # Mostrar el diccionario de marcadores de forma visual para debug
+        # for id_, marker in self.markers.items():
+            # self.node.get_logger().info(f"{self.camera_name}: Marcador {id_} - Estado: {marker.state}")
+        unreliable = [id_ for id_, marker  in self.markers.items() if marker.score < precise_thresh and marker.state not in ['reliable', 'rejected', 'dead']]
+        if unreliable:
+            self.node.get_logger().warn(f"{self.camera_name}: Marcadores no precisos: {unreliable}")
             return False
 
-        unreliable_markers = [
-            marker.id for marker in self.markers.values() if not marker.is_precise()]
-
-        if unreliable_markers:
-            self.node.get_logger().warn(
-                f"Camera {self.camera_name}: Los siguientes marcadores aún no son reliable: {', '.join(map(str, unreliable_markers))}."
-            )
-            return False
-        else:
-            self.node.get_logger().info(
-                f"Camera {self.camera_name}: ¡Todos los marcadores son reliable!")
-            return True
+        self.node.get_logger().info(f"{self.camera_name}: Todos los marcadores son precisos.")
+        return True
+    
+    def _remove_unreliable_markers(self):
+        to_remove = [id_ for id_, marker in self.markers.items() if marker.state not in ['reliable']]
+        for id_ in to_remove:
+            del self.markers[id_]
+            self.node.get_logger().info(f"{self.camera_name}: Marcador {id_} eliminado por no ser confiable.")
