@@ -11,6 +11,8 @@ def generate_launch_description():
     for idx, cam in enumerate(cameras, start=1):
         in_arg = f'input_topic_{idx}'
         out_arg = f'output_topic_{idx}'
+        depth_in_arg = f'depth_input_topic_{idx}'
+        depth_out_arg = f'depth_output_topic_{idx}'
 
         ld.add_action(DeclareLaunchArgument(
             in_arg,
@@ -23,6 +25,17 @@ def generate_launch_description():
             description=f'Raw output topic for camera {idx}'
         ))
 
+        ld.add_action(DeclareLaunchArgument(
+            depth_in_arg,
+            default_value=f'{cam}/depth/image_raw/compressedDepth',
+            description=f'Compressed depth input topic for camera {idx}'
+        ))
+        ld.add_action(DeclareLaunchArgument(
+            depth_out_arg,
+            default_value=f'{cam}/depth/image_raw/decompressed',
+            description=f'Raw depth output topic for camera {idx}'
+        ))
+
         ld.add_action(Node(
             package='gemini_utils',
             executable='uncompress_node',
@@ -31,6 +44,17 @@ def generate_launch_description():
             parameters=[{
                 'input_topic': LaunchConfiguration(in_arg),
                 'output_topic': LaunchConfiguration(out_arg),
+                'queue_size': 10
+            }]
+        ))
+        ld.add_action(Node(
+            package='gemini_utils',
+            executable='depth_decompressor_node',
+            name=f'uncompress_depth_node_{idx}',
+            output='screen',
+            parameters=[{
+                'depth_input_topic': f'{cam}/depth/image_raw/compressedDepth',
+                'depth_output_topic': f'{cam}/depth/image_raw/decompressed',
                 'queue_size': 10
             }]
         ))
