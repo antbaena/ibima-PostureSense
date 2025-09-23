@@ -1,0 +1,13 @@
+aruco:
+  dictionary: DICT_5X5_100
+  marker_length_m: 0.08   # Lado del marcador en metros (ajústalo)
+
+# Mapeo de ID de marcador (cara) a Transform face->cube (qx,qy,qz,qw, tx,ty,tz) [m]
+# OJO: Rellena con tus valores reales. Estos son placeholders.
+faces:
+  "0": [0.0, 0.0, 0.0, 1.0,  0.0, 0.0, 0.0]
+  "1": [0.0, 0.0, 0.0, 1.0,  0.0, 0.0, 0.0]
+  "2": [0.0, 0.0, 0.0, 1.0,  0.0, 0.0, 0.0]
+  "3": [0.0, 0.0, 0.0, 1.0,  0.0, 0.0, 0.0]
+  "4": [0.0, 0.0, 0.0, 1.0,  0.0, 0.0, 0.0]
+  "5": [0.0, 0.0, 0.0, 1.0,  0.0, 0.0, 0.0]
