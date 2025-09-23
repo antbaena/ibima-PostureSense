@@ -1,0 +1,20 @@
+cam_00_00:
+  ros__parameters:
+    color_image_topic: "/cam00/camera_00/color/image_raw/decompressed"
+    camera_info_topic: "/cam00/camera_00/color/camera_info"
+    camera_name: "cam00/camera_00"
+cam_00_01:
+  ros__parameters:
+    color_image_topic: "/cam00/camera_01/color/image_raw/decompressed"
+    camera_info_topic: "/cam00/camera_01/color/camera_info"
+    camera_name: "cam00/camera_01"
+cam_01_02:
+  ros__parameters:
+    color_image_topic: "/cam01/camera_02/color/image_raw/decompressed"
+    camera_info_topic: "/cam01/camera_02/color/camera_info"
+    camera_name: "cam01/camera_02"
+cam_02_03:
+  ros__parameters:
+    color_image_topic: "/cam02/camera_03/color/image_raw/decompressed"
+    camera_info_topic: "/cam02/camera_03/color/camera_info"
+    camera_name: "cam02/camera_03"
