@@ -4,4 +4,4 @@ aruco_params:
     default_value: "DICT_5X5_250"
   marker_length:
     type: double
-    default_value: 0.26
+    default_value: 0.025

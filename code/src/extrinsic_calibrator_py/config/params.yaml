@@ -1,7 +1,7 @@
 detector_aruco_node:
   ros__parameters:
     aruco_dictionary: "DICT_5X5_250"
-    marker_length: 0.26
+    marker_length: 0.2
     camera_names:
       - "cam1"
       - "cam2"

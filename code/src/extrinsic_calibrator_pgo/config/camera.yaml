@@ -6,7 +6,7 @@ cam00_00:
     depth_filter_max: 2.5
     quality_threshold: 0.5
     image_topic: "/cam00/camera_00/color/image_raw/decompressed"
-    depth_topic: "/cam00/camera_00/depth/image_raw"
+    depth_topic: "/cam00/camera_00/depth/image_raw/decompressed"
     camera_info_topic: "/cam00/camera_00/color/camera_info"
 
 cam00_01:
@@ -17,7 +17,7 @@ cam00_01:
     depth_filter_max: 2.5     
     quality_threshold: 0.5
     image_topic: "/cam00/camera_01/color/image_raw/decompressed"
-    depth_topic: "/cam00/camera_01/depth/image_raw"
+    depth_topic: "/cam00/camera_01/depth/image_raw/decompressed"
     camera_info_topic: "/cam00/camera_01/color/camera_info" 
 
 cam01_02:
@@ -28,7 +28,7 @@ cam01_02:
     depth_filter_max: 2.5     
     quality_threshold: 0.5
     image_topic: "/cam01/camera_02/color/image_raw/decompressed"
-    depth_topic: "/cam01/camera_02/depth/image_raw"
+    depth_topic: "/cam01/camera_02/depth/image_raw/decompressed"
     camera_info_topic: "/cam01/camera_02/color/camera_info"
 
 cam02_03:
@@ -39,5 +39,5 @@ cam02_03:
     depth_filter_max: 2.5     
     quality_threshold: 0.5
     image_topic: "/cam02/camera_03/color/image_raw/decompressed"
-    depth_topic: "/cam02/camera_03/depth/image_raw"
+    depth_topic: "/cam02/camera_03/depth/image_raw/decompressed"
     camera_info_topic: "/cam02/camera_03/color/camera_info"
