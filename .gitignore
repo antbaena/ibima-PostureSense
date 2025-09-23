@@ -6,3 +6,9 @@ code/log.txt
 code/src/camera_postprocess/camera_postprocess/dataset/
 __pycache__/
 code/test_sync_4cams_compressed
+*.mcap
+metadata.yaml
+*.zstd
+/gui/build
+code/test_full_setup/
+code/test_full_setup.zip
