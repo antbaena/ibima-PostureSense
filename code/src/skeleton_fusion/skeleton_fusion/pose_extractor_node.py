@@ -12,9 +12,10 @@ import cv2
 import mediapipe as mp
 
 # Detector interface and implementation
-from pose_detectors.mediapipe_detector import MediapipePoseDetector
+from .pose_detectors.mediapipe_detector import MediapipePoseDetector
 # Annotator for 2D overlay
-from annotators.pose_annotator import PoseAnnotator
+from .annotators.pose_annotator import PoseAnnotator
+from statistics import mean, stdev
 
 class ImagePoseNode(Node):
     def __init__(self):
@@ -25,15 +26,18 @@ class ImagePoseNode(Node):
         self.declare_parameter('color_topic', '/cam00/camera/color/image_raw')
         self.declare_parameter('annotated_topic', '/cam00/camera/color/annotated_image')
         self.declare_parameter('depth_topic', '/cam00/depth/image_raw')
-        self.declare_parameter('caminfo_topic', '/cam00/depth/camera_info')
+        self.declare_parameter('camera_info_topic', '/cam00/depth/camera_info')
+        self.declare_parameter('markerArray_output_topic', '/cam00/pose_3d')
+        self.declare_parameter('marker_frame_id', 'cam00_color_optical_frame')
 
         # Get parameters
         self.cam_name       = self.get_parameter('camera_name').get_parameter_value().string_value
         self.color_topic    = self.get_parameter('color_topic').get_parameter_value().string_value
         self.annotated_topic= self.get_parameter('annotated_topic').get_parameter_value().string_value
         self.depth_topic    = self.get_parameter('depth_topic').get_parameter_value().string_value
-        self.caminfo_topic  = self.get_parameter('caminfo_topic').get_parameter_value().string_value
-
+        self.caminfo_topic  = self.get_parameter('camera_info_topic').get_parameter_value().string_value
+        self.marker_topic   = self.get_parameter('markerArray_output_topic').get_parameter_value().string_value
+        self.marker_frame_id = self.get_parameter('marker_frame_id').get_parameter_value().string_value
         # Initialize bridge, detector, annotator
         self.bridge    = CvBridge()
         self.detector  = MediapipePoseDetector()
@@ -43,7 +47,7 @@ class ImagePoseNode(Node):
         self.cam_model = None
 
         # Single-use CameraInfo subscriber
-        self.create_subscription(
+        self.info_sub = self.create_subscription(
             CameraInfo,
             self.caminfo_topic,
             self.caminfo_callback,
@@ -62,7 +66,7 @@ class ImagePoseNode(Node):
 
         # Publishers
         self.img_pub    = self.create_publisher(Image, self.annotated_topic, 10)
-        self.marker_pub = self.create_publisher(MarkerArray, f'/{self.cam_name}/pose_3d', 10)
+        self.marker_pub = self.create_publisher(MarkerArray, self.marker_topic, 10)
 
         self.get_logger().info(
             f'Node para cámara {self.cam_name}: color={self.color_topic}, depth={self.depth_topic}, caminfo={self.caminfo_topic}, annotated={self.annotated_topic}'
@@ -73,7 +77,7 @@ class ImagePoseNode(Node):
         model.fromCameraInfo(msg)
         self.cam_model = model
         # Destroy this subscription after first use
-        self.destroy_subscription(self.caminfo_callback)
+        self.destroy_subscription(self.info_sub)
         self.get_logger().info(f'Camera model for {self.cam_name} initialized')
 
     def sync_callback(self, color_msg: Image, depth_msg: Image):
@@ -105,24 +109,47 @@ class ImagePoseNode(Node):
 
         # Build and publish 3D skeleton
         markers = MarkerArray()
-        lifetime = Duration(sec=0, nanosec=500_000_000)
-        frame_id = color_msg.header.frame_id
+        lifetime = Duration(sec=0, nanosec=100_000_000)
+        frame_id = self.marker_frame_id
+        stamp = self.get_clock().now().to_msg()
 
         if landmarks:
             lm_list = landmarks.landmark
+            landmarks_3d = {}
+            z_values = []
+
+            # Obtener todos los puntos 3D válidos
+            for idx, lm in enumerate(lm_list):
+                u, v = int(lm.x * depth.shape[1]), int(lm.y * depth.shape[0])
+                z = self.get_depth(u, v, depth)
+                if z is None:
+                    continue
+                ray = self.cam_model.projectPixelTo3dRay((u, v))
+                pt = [c * z for c in ray]
+                landmarks_3d[idx] = pt
+                z_values.append(pt[2])
+
+            # Calcular límites de profundidad válidos
+            if len(z_values) >= 5:
+                z_mean = mean(z_values)
+                z_std = stdev(z_values)
+                z_min = z_mean - 2 * z_std
+                z_max = z_mean + 2 * z_std
+            else:
+                z_min, z_max = 0.5, 2.5  # fallback
+
+            # Dibujar conexiones solo si ambos extremos están dentro del rango
             for idx, (i, j) in enumerate(mp.solutions.pose.POSE_CONNECTIONS):
-                u1, v1 = int(lm_list[i].x * depth.shape[1]), int(lm_list[i].y * depth.shape[0])
-                u2, v2 = int(lm_list[j].x * depth.shape[1]), int(lm_list[j].y * depth.shape[0])
-                z1 = depth[v1, u1] * 0.001
-                z2 = depth[v2, u2] * 0.001
-                ray1 = self.cam_model.projectPixelTo3dRay((u1, v1))
-                ray2 = self.cam_model.projectPixelTo3dRay((u2, v2))
-                pt1 = [c * z1 for c in ray1]
-                pt2 = [c * z2 for c in ray2]
+                pt1 = landmarks_3d.get(i)
+                pt2 = landmarks_3d.get(j)
+                if pt1 is None or pt2 is None:
+                    continue
+                if not (z_min <= pt1[2] <= z_max) or not (z_min <= pt2[2] <= z_max):
+                    continue
 
                 m = Marker()
                 m.header.frame_id = frame_id
-                m.header.stamp = color_msg.header.stamp
+                m.header.stamp = stamp
                 m.ns = f'{self.cam_name}_skeleton'
                 m.id = idx
                 m.type = Marker.LINE_STRIP
@@ -133,15 +160,13 @@ class ImagePoseNode(Node):
                 m.points = [Point(x=pt1[0], y=pt1[1], z=pt1[2]), Point(x=pt2[0], y=pt2[1], z=pt2[2])]
                 markers.markers.append(m)
 
-            for idx, lm in enumerate(lm_list):
-                u, v = int(lm.x * depth.shape[1]), int(lm.y * depth.shape[0])
-                z = depth[v, u] * 0.001
-                ray = self.cam_model.projectPixelTo3dRay((u, v))
-                pt = [c * z for c in ray]
-
+            # Dibujar solo los landmarks dentro del rango permitido
+            for idx, pt in landmarks_3d.items():
+                if not (z_min <= pt[2] <= z_max):
+                    continue
                 m = Marker()
                 m.header.frame_id = frame_id
-                m.header.stamp = color_msg.header.stamp
+                m.header.stamp = stamp
                 m.ns = f'{self.cam_name}_joints'
                 m.id = 1000 + idx
                 m.type = Marker.SPHERE
@@ -156,7 +181,26 @@ class ImagePoseNode(Node):
 
         self.marker_pub.publish(markers)
 
-
+    def get_depth(self, u: int, v: int, depth: Image, max_depth: float = 2.5, min_depth: float = 0.5) -> float:
+        """Get depth value at pixel (u, v) in the depth image."""
+        if not self.valid_pixel(u, v, depth.shape):
+            self.get_logger().warn(f'Invalid pixel coordinates: ({u}, {v})')
+            return None
+        try:
+            depth_value =  depth[v, u] * 0.001  # Convert to meters
+            if depth_value < min_depth or depth_value > max_depth:
+                self.get_logger().warn(f'Depth out of range: {depth_value} at ({u}, {v})')
+                return None
+            return depth_value
+        except Exception as e:
+            self.get_logger().error(f'Error getting depth: {e}')
+            return None
+    
+    def valid_pixel(self, u: int, v: int, shape: tuple) -> bool:
+        """Check if pixel coordinates (u, v) are valid for the given image shape."""
+        height, width = shape[:2]
+        return 0 <= u < width and 0 <= v < height
+    
 def main(args=None):
     rclpy.init(args=args)
     node = ImagePoseNode()

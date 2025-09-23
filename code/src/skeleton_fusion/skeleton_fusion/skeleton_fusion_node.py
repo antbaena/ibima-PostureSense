@@ -6,7 +6,6 @@ from geometry_msgs.msg import Point
 from std_msgs.msg import Float64
 import tf2_ros
 import tf2_geometry_msgs
-from tf2_ros.buffer_interface import TransformException
 from builtin_interfaces.msg import Time
 
 from message_filters import Subscriber, ApproximateTimeSynchronizer
@@ -19,8 +18,8 @@ class SkeletonFusionNode(Node):
         super().__init__('skeleton_fusion_node')
 
         # Params
-        self.declare_parameter('camera_names', ['cam1', 'cam2', 'cam3', 'cam4'])
-        self.declare_parameter('target_frame', 'world')
+        self.declare_parameter('camera_names', ['cam00/camera_00', 'cam00/camera_01', 'cam3', 'cam4'])
+        self.declare_parameter('target_frame', 'cam1')
 
         self.camera_names = self.get_parameter('camera_names').get_parameter_value().string_array_value
         self.target_frame = self.get_parameter('target_frame').get_parameter_value().string_value
@@ -34,8 +33,8 @@ class SkeletonFusionNode(Node):
         self.error_pub = self.create_publisher(Float64, '/skeleton_fusion/error_metric', 10)
 
         # Subscribers
-        self.subs = [Subscriber(self, MarkerArray, f'/{name}/pose3d_markers') for name in self.camera_names]
-        self.sync = ApproximateTimeSynchronizer(self.subs, queue_size=5, slop=0.1)
+        self.subs = [Subscriber(self, MarkerArray, f'/{name}/pose_3d') for name in self.camera_names]
+        self.sync = ApproximateTimeSynchronizer(self.subs, queue_size=5, slop=0.1, allow_headerless=True)
         self.sync.registerCallback(self.sync_callback)
 
     def sync_callback(self, *marker_arrays):
@@ -63,7 +62,7 @@ class SkeletonFusionNode(Node):
 
                 all_points_per_cam.append(np.array(cam_points))
 
-        except TransformException as ex:
+        except Exception as ex:
             self.get_logger().warn(f"TF transform failed: {str(ex)}")
             return
 
