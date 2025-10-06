@@ -23,7 +23,7 @@ class CameraNode(Node):
         self.declare_parameter('camera_id', 'cam_1')
         self.declare_parameter('marker_size', 0.05)  # metros
         self.declare_parameter('aruco_dict', 'DICT_5X5_50')
-        self.declare_parameter('depth_filter_max', 2.5)
+        self.declare_parameter('depth_filter_max', 10.5)
         self.declare_parameter('quality_threshold', 0.01)
         self.declare_parameter('image_topic', '/image_color')
         self.declare_parameter('depth_topic', '/image_depth')
@@ -42,7 +42,7 @@ class CameraNode(Node):
         self.bridge = CvBridge()
         self.image_sub = self.create_subscription(Image, self.image_topic, self.image_callback, 10)
         self.info_sub = self.create_subscription(CameraInfo, self.camera_info_topic, self.info_callback, 10)
-        # self.depth_sub = self.create_subscription(Image, self.depth_topic, self.depth_callback, 10)
+        self.depth_sub = self.create_subscription(Image, self.depth_topic, self.depth_callback, 10)
         self.pub = self.create_publisher(MarkerObservation, '/marker_observations', 10)
 
         # === Internos ===
@@ -72,7 +72,7 @@ class CameraNode(Node):
         self.depth_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
 
     def image_callback(self, msg: Image):
-        if self.camera_matrix is None:
+        if self.camera_matrix is None or self.depth_image is None:
             return  # Esperar a tener todo
 
         frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
@@ -91,8 +91,8 @@ class CameraNode(Node):
 
             # Leer profundidad del centro del marcador
             center_px = np.mean(corners[i][0], axis=0).astype(int)
-            # z = self.depth_image[center_px[1], center_px[0]] / 1000.0  # mm → m
-            z = 1
+            z = self.depth_image[center_px[1], center_px[0]] / 1000.0  # mm → m
+            
 
             if z == 0 or z > self.depth_filter_max:
                 continue  # ruido o fuera de rango

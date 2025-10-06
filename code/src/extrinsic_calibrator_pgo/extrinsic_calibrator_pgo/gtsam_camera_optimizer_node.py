@@ -61,7 +61,7 @@ class CameraPoseOptimizer(Node):
         return self.camera_id_map.get(camera_id, {}).get('frame_id', "")
 
     def observation_callback(self, msg: MarkerObservation):
-        if msg.confidence < self.min_confidence or not self.optimization_enabled:
+        if  not self.optimization_enabled:
             return
 
         # Registrar el índice y el frame_id del camera_id

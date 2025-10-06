@@ -1,4 +1,3 @@
-
 /code/.vscode
 *.mcap
 metadata.yaml
@@ -15,3 +14,17 @@ __pycache__
 code/test_full_setup.zip
 *.zip
 code/config_time.sh
+code/build
+code/install
+code/log
+code/Log
+code/log.txt
+code/src/camera_postprocess/camera_postprocess/dataset/
+__pycache__/
+code/test_sync_4cams_compressed
+*.mcap
+metadata.yaml
+*.zstd
+/gui/build
+code/test_full_setup/
+code/test_full_setup.zip

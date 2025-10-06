@@ -14,17 +14,15 @@ find_package(cv_bridge REQUIRED)
 find_package(image_transport REQUIRED)
 find_package(OpenCV REQUIRED)
 
-# 1) Define el ejecutable
 add_executable(uncompress_node src/uncompress_node.cpp)
+add_executable(depth_decompressor_node src/uncompress_depth_node.cpp)
 
-# 2) Incluye los headers de tu carpeta include/
 target_include_directories(uncompress_node
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
 
-# 3) Añade las dependencias de ROS 2 y OpenCV
 ament_target_dependencies(uncompress_node
   rclcpp
   sensor_msgs
@@ -33,7 +31,6 @@ ament_target_dependencies(uncompress_node
   OpenCV
 )
 
-# 4) Enlaza con los imported targets de cv_bridge y OpenCV
 target_link_libraries(uncompress_node
   cv_bridge::cv_bridge
   ${OpenCV_LIBRARIES}
@@ -44,6 +41,35 @@ install(
   TARGETS uncompress_node
   DESTINATION lib/${PROJECT_NAME}
 )
+
+
+target_include_directories(depth_decompressor_node
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+
+ament_target_dependencies(depth_decompressor_node
+  rclcpp
+  sensor_msgs
+  cv_bridge
+  image_transport
+  OpenCV
+)
+
+target_link_libraries(depth_decompressor_node
+  cv_bridge::cv_bridge
+  ${OpenCV_LIBRARIES}
+)
+
+# Instalación del ejecutable y del launch
+install(
+  TARGETS depth_decompressor_node
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+
+
 install(
   DIRECTORY launch
   DESTINATION share/${PROJECT_NAME}/launch

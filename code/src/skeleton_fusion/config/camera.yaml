@@ -1,0 +1,39 @@
+cam00_00:
+  ros__parameters:
+    camera_name: "cam1"
+    color_topic: "/cam00/camera_00/color/image_raw/decompressed"
+    depth_topic: "/cam00/camera_00/depth/image_raw/decompressed"
+    camera_info_topic: "/cam00/camera_00/color/camera_info"
+    annotated_topic: "/cam00/camera_00/color/annotated_image"
+    markerArray_output_topic: "/cam00/camera_00/pose_3d"
+    marker_frame_id: "cam1"
+
+cam00_01:
+  ros__parameters:
+    camera_name: "cam2"
+    color_topic: "/cam00/camera_01/color/image_raw/decompressed"
+    depth_topic: "/cam00/camera_01/depth/image_raw/decompressed"
+    camera_info_topic: "/cam00/camera_01/color/camera_info"
+    annotated_topic: "/cam00/camera_01/color/annotated_image"
+    markerArray_output_topic: "/cam00/camera_01/pose_3d"
+    marker_frame_id: "cam2"
+
+cam01_02:
+  ros__parameters:
+    camera_name: "cam3"
+    color_topic: "/cam01/camera_02/color/image_raw/decompressed"
+    depth_topic: "/cam01/camera_02/depth/image_raw/decompressed"
+    camera_info_topic: "/cam01/camera_02/color/camera_info"
+    annotated_topic: "/cam01/camera_02/color/annotated_image"
+    markerArray_output_topic: "/cam01/pose_3d"
+    marker_frame_id: "cam3"
+
+cam02_03:
+  ros__parameters:
+    camera_name: "cam4"
+    color_topic: "/cam02/camera_03/color/image_raw/decompressed"
+    depth_topic: "/cam02/camera_03/depth/image_raw/decompressed"
+    camera_info_topic: "/cam02/camera_03/color/camera_info"
+    annotated_topic: "/cam02/camera_03/color/annotated_image"
+    markerArray_output_topic: "/cam02/pose_3d"
+    marker_frame_id: "cam4"

@@ -15,16 +15,24 @@ class Aruco3DNode(Node):
         super().__init__('aruco_3d_detector')
         self.bridge = CvBridge()
 
+        self.declare_parameter('color_image_topic', '/cam00/camera_00/color/image_raw/decompressed')
+        self.declare_parameter('camera_info_topic', '/cam00/camera_00/color/camera_info')
+        self.declare_parameter('camera_name', 'cam00')
+
+        color_image_topic = self.get_parameter('color_image_topic').get_parameter_value().string_value
+        camera_info_topic = self.get_parameter('camera_info_topic').get_parameter_value().string_value
+        camera_name = self.get_parameter('camera_name').get_parameter_value().string_value
+
         # Suscriptores sincronizados
-        img_sub = Subscriber(self, Image, '/cam00/camera_00/color/image_raw/decompressed')
-        info_sub = Subscriber(self, CameraInfo, '/cam00/camera_00/color/camera_info')
+        img_sub = Subscriber(self, Image, color_image_topic)
+        info_sub = Subscriber(self, CameraInfo, camera_info_topic)
         self.sync = ApproximateTimeSynchronizer([img_sub, info_sub],
                                                 queue_size=10,
                                                 slop=0.1)
         self.sync.registerCallback(self.callback)
 
         # Publicador de markers
-        self.marker_pub = self.create_publisher(MarkerArray, 'aruco_markers_3d', 10)
+        self.marker_pub = self.create_publisher(MarkerArray, camera_name + '/aruco_markers', 10)
 
         # Parámetros ArUco
         self.aruco_dict   = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_50)
@@ -77,7 +85,7 @@ class Aruco3DNode(Node):
 
                 header = Header()
                 header.stamp = self.get_clock().now().to_msg()
-                header.frame_id = info_msg.header.frame_id
+                header.frame_id = "map"
 
 
                 # ---------- TEXTO CON EL ID DEL ARUCO ----------

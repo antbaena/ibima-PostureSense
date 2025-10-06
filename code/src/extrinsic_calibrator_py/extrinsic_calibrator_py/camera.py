@@ -76,7 +76,8 @@ class MarkerTracker:
             return False
         for c, id_arr in zip(corners, ids.flatten()):
             id_ = int(id_arr)
-
+            if id_ in [0 , 7]:
+                continue
             marker = markers.setdefault(id_, Marker(id_))
             if marker.state in ['rejected', 'dead', 'reliable']:
                 continue
