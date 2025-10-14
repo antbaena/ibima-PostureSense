@@ -2,12 +2,28 @@ aruco:
   dictionary: DICT_5X5_100
   marker_length_m: 0.08   # Lado del marcador en metros (ajústalo)
 
-# Mapeo de ID de marcador (cara) a Transform face->cube (qx,qy,qz,qw, tx,ty,tz) [m]
-# OJO: Rellena con tus valores reales. Estos son placeholders.
-faces:
-  "0": [0.0, 0.0, 0.0, 1.0,  0.0, 0.0, 0.0]
-  "1": [0.0, 0.0, 0.0, 1.0,  0.0, 0.0, 0.0]
-  "2": [0.0, 0.0, 0.0, 1.0,  0.0, 0.0, 0.0]
-  "3": [0.0, 0.0, 0.0, 1.0,  0.0, 0.0, 0.0]
-  "4": [0.0, 0.0, 0.0, 1.0,  0.0, 0.0, 0.0]
-  "5": [0.0, 0.0, 0.0, 1.0,  0.0, 0.0, 0.0]
+# Mapeo de ID de marcador a Transform marker->cube
+# Puedes usar formato con quaternion (q) y traslación (t):
+#   q: [qx, qy, qz, qw]  <- quaternion (¡cuidado con el orden!)
+#   t: [tx, ty, tz]      <- traslación en metros
+# O matriz de transformación 4x4 completa:
+#   T: [[...], [...], [...], [...]]
+markers:
+  "0":
+    q: [0.0, 0.0, 0.0, 1.0]  # sin rotación
+    t: [0.0, 0.0, 0.0]        # en el centro del cubo
+  "1":
+    q: [0.0, 0.0, 0.0, 1.0]
+    t: [0.0, 0.0, 0.0]
+  "2":
+    q: [0.0, 0.0, 0.0, 1.0]
+    t: [0.0, 0.0, 0.0]
+  "3":
+    q: [0.0, 0.0, 0.0, 1.0]
+    t: [0.0, 0.0, 0.0]
+  "4":
+    q: [0.0, 0.0, 0.0, 1.0]
+    t: [0.0, 0.0, 0.0]
+  "5":
+    q: [0.0, 0.0, 0.0, 1.0]
+    t: [0.0, 0.0, 0.0]

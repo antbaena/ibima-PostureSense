@@ -90,7 +90,7 @@ class ExtrinsicsOptimizer(Node):
     # ====== Sub y timer ======
     def on_pair(self, msg: PairMeasurement):
         # Convertir a matriz
-        Tij = tf_to_mat(msg.T_i_to_j)
+        Tij = tf_to_mat(msg.t_i_to_j)
         wi = float(max(1e-6, msg.weight))
         i = self.cam_index.get(msg.cam_i, None)
         j = self.cam_index.get(msg.cam_j, None)

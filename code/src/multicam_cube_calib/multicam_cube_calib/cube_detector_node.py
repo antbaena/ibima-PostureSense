@@ -7,7 +7,7 @@ from sensor_msgs.msg import Image, CameraInfo
 from geometry_msgs.msg import Transform
 
 # NUEVOS mensajes agregados
-from multicam_cube_calib_interfaces.msg import CameraMarker, CameraMarkersList
+from multicam_cube_calib_interfaces.msg import CameraMarker, CamerasMarkersList
 
 # OpenCV / NumPy
 from cv_bridge import CvBridge
@@ -23,21 +23,21 @@ from multicam_cube_calib.se3 import mat_to_tf
 class MultiCameraMarkersSync(Node):
     """
     Sincroniza N cámaras en el tiempo y publica, para cada 'tick' sincronizado,
-    un único mensaje CameraMarkersList con un CameraMarker por cámara.
+    un único mensaje CamerasMarkersList con un CameraMarker por cámara.
     """
     def __init__(self):
         super().__init__('cube_markers_sync')
 
         # Parámetros
-        self.declare_parameter('cameras', ['cam0', 'cam1'])
-        self.declare_parameter('image_topic_tpl', '/{}/image')
-        self.declare_parameter('caminfo_topic_tpl', '/{}/camera_info')
+        self.declare_parameter('cameras', ['camera_01', 'camera_02'])
+        self.declare_parameter('image_topic_tpl', '/{}/color/image_raw')
+        self.declare_parameter('caminfo_topic_tpl', '/{}/color/camera_info')
         self.declare_parameter('output_topic', '/camera_markers_sync')
 
         # Sincronizador
         self.declare_parameter('approximate', True)        # True = ApproximateTimeSynchronizer
         self.declare_parameter('sync_queue_size', 10)      # cola del sincronizador
-        self.declare_parameter('sync_slop_sec', 0.05)      # tolerancia (s) si approximate=True
+        self.declare_parameter('sync_slop_sec', 0.2)      # tolerancia (s) si approximate=True
         self.declare_parameter('marker_length', 0.23)        # longitud del marcador (m)
         self.declare_parameter('dictionary', 'DICT_5X5_100')  # diccionario ArUco
 
@@ -97,8 +97,8 @@ class MultiCameraMarkersSync(Node):
         self.sync.registerCallback(self.synced_images_cb)
 
         # Publisher agregado
-        self.pub = self.create_publisher(CameraMarkersList, self.output_topic, 10)
-        self.get_logger().info(f"Publicando CameraMarkersList en {self.output_topic}")
+        self.pub = self.create_publisher(CamerasMarkersList, self.output_topic, 10)
+        self.get_logger().info(f"Publicando CamerasMarkersList en {self.output_topic}")
 
     # ==== Callbacks ===========================================================
 
@@ -131,6 +131,7 @@ class MultiCameraMarkersSync(Node):
                 self.get_logger().warning(f"No se pudo destruir suscripción CameraInfo de {cam}: {e}")
 
     def synced_images_cb(self, *image_msgs: Image):
+        self.get_logger().info(f"Recibidos {len(image_msgs)} imágenes sincronizadas")
         # Verificar que tenemos intrínsecos de todas las cámaras
         missing = [c for c in self.cameras if c not in self.infos]
         if missing:
@@ -160,6 +161,12 @@ class MultiCameraMarkersSync(Node):
                 corners, ids, _ = self.detector.detectMarkers(cv_img)
             else:
                 corners, ids, _ = cv2.aruco.detectMarkers(cv_img, self.aruco_dict, parameters=self.aruco_params)
+
+            #Loggear detecciones
+            if ids is not None and len(ids) > 0:
+                self.get_logger().info(f"Cámara {cam}: detectados {len(ids)} marcadores: {ids.flatten().tolist()}")
+            else:
+                self.get_logger().info(f"Cámara {cam}: no se detectaron marcadores")
 
             cam_marker_msg = CameraMarker()
             cam_marker_msg.header = Header()
@@ -210,13 +217,13 @@ class MultiCameraMarkersSync(Node):
                 confidences.append(conf)
 
             cam_marker_msg.marker_ids = marker_ids
-            cam_marker_msg.T_cam_to_marker = transforms  # el campo se llama T_cam_to_marker en tu msg
+            cam_marker_msg.t_cam_marker = transforms  # el campo se llama t_cam_marker en tu msg
             cam_marker_msg.confidence = confidences
 
             cameras_list.append(cam_marker_msg)
 
         # Mensaje agregado
-        out_msg = CameraMarkersList()
+        out_msg = CamerasMarkersList()
         out_msg.header = Header()
         # Usamos el stamp del primer mensaje sincronizado
         out_msg.header.stamp = stamps[0] if stamps else self.get_clock().now().to_msg()

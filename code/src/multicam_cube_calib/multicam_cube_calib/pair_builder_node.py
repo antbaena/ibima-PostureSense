@@ -5,13 +5,13 @@ import yaml
 from rclpy.node import Node
 from rclpy.qos import QoSProfile
 from std_msgs.msg import Header
-from multicam_cube_calib_interfaces.msg import PairMeasurement, CameraMarkersList
+from multicam_cube_calib_interfaces.msg import PairMeasurement, CamerasMarkersList
 from multicam_cube_calib.se3 import tf_to_mat, mat_to_tf
 
 
 class PairBuilder(Node):
     """Construye pares camera->camera usando las detecciones sincronizadas
-    de marcadores publicadas como `CameraMarkersList`. Requiere un
+    de marcadores publicadas como `CamerasMarkersList`. Requiere un
     `cube_config` YAML que contenga la pose de cada marcador en el marco del
     cubo (marker -> cube).
     """
@@ -21,7 +21,7 @@ class PairBuilder(Node):
 
         # Parámetros
         self.declare_parameter('markers_topic', '/camera_markers_sync')
-        self.declare_parameter('cube_config', '')
+        self.declare_parameter('cube_config', '/home/mapir/ibima-PostureSense/code/src/multicam_cube_calib/config/cube.yaml')
         self.declare_parameter('publish_topic', '/calib/pairs')
 
         self.markers_topic = self.get_parameter('markers_topic').get_parameter_value().string_value
@@ -69,11 +69,15 @@ class PairBuilder(Node):
 
         # Publisher y suscripción
         self.pub = self.create_publisher(PairMeasurement, self.publish_topic, 10)
-        self.sub = self.create_subscription(CameraMarkersList, self.markers_topic, self.on_markers, self.qos)
+        self.sub = self.create_subscription(CamerasMarkersList, self.markers_topic, self.on_markers, self.qos)
         self.get_logger().info(f"Suscrito a {self.markers_topic}, publicando pares en {self.publish_topic}")
 
-    def on_markers(self, msg: CameraMarkersList):
-        # Construir mapa cam -> T_cam_to_cube usando el mejor marcador disponible
+    def on_markers(self, msg: CamerasMarkersList):
+        #SI al menos dos camaras tienen detecciones continuar
+        if sum(1 for cam_msg in msg.cameras if len(cam_msg.marker_ids) > 0) < 2:
+            self.get_logger().debug("Menos de dos cámaras con detecciones, ignorando")
+            return
+        # Construir mapa cam -> t_cam_to_cube usando el mejor marcador disponible
         cam_to_cube = {}
         cam_conf = {}
 
@@ -82,39 +86,31 @@ class PairBuilder(Node):
             best_score = -1.0
             best_T = None
             # recorrer detecciones de la cámara
-            for mid, tform, conf in zip(cam_msg.marker_ids, cam_msg.T_cam_to_marker, cam_msg.confidence):
+            for mid, tform, conf in zip(cam_msg.marker_ids, cam_msg.t_cam_marker, cam_msg.confidence):
                 if mid not in self.marker_to_cube:
                     continue
                 try:
-                    T_cam_to_marker = tf_to_mat(tform)
+                    t_cam_marker = tf_to_mat(tform)
                     T_marker_to_cube = self.marker_to_cube[mid]
-                    T_cam_to_cube = T_cam_to_marker @ T_marker_to_cube
+                    t_cam_to_cube = t_cam_marker @ T_marker_to_cube
                 except Exception as e:
-                    self.get_logger().debug(f"Error calculando T para cam {cam} marker {mid}: {e}")
+                    self.get_logger().warning(f"Error calculando T para cam {cam} marker {mid}: {e}")
                     continue
                 if conf > best_score:
                     best_score = conf
-                    best_T = T_cam_to_cube
+                    best_T = t_cam_to_cube
 
             if best_T is not None:
                 cam_to_cube[cam] = best_T
                 cam_conf[cam] = float(max(1e-6, best_score))
-
+                self.get_logger().info(f"Cámara {cam}: mejor marcador {mid} con confianza {best_score:.4f}")
         # Solo generar parejas para cámaras que comparten al menos un id de marcador visible
         cams = list(cam_to_cube.keys())
-        # Construir diccionario: cámara -> set de ids visibles
-        cam_visible_ids = {}
-        for cam_msg in msg.cameras:
-            cam = cam_msg.camera
-            cam_visible_ids[cam] = set([mid for mid in cam_msg.marker_ids if mid in self.marker_to_cube])
-
         for i in range(len(cams)):
             for j in range(i+1, len(cams)):
                 ci = cams[i]
                 cj = cams[j]
-                # Verificar si comparten algún id visible
-                if len(cam_visible_ids.get(ci, set()) & cam_visible_ids.get(cj, set())) == 0:
-                    continue
+
                 Ti = cam_to_cube[ci]
                 Tj = cam_to_cube[cj]
                 Tij = Ti @ np.linalg.inv(Tj)
@@ -124,11 +120,14 @@ class PairBuilder(Node):
                 pair.header.stamp = msg.header.stamp if hasattr(msg, 'header') else self.get_clock().now().to_msg()
                 pair.cam_i = ci
                 pair.cam_j = cj
-                pair.T_i_to_j = mat_to_tf(Tij)
+                pair.t_i_to_j = mat_to_tf(Tij)
                 # peso: media geométrica de confidencias de ambas cámaras
                 w = float(np.sqrt(cam_conf.get(ci, 1e-6) * cam_conf.get(cj, 1e-6)))
                 pair.weight = w
                 self.pub.publish(pair)
+                self.get_logger().debug(f"Publicado par {ci} -> {cj} con peso {w:.4f}")
+                # Publicar para debug la distancia entre cámaras en cm
+                self.get_logger().debug(f"Distancia entre cámaras {ci} y {cj}: {np.linalg.norm(Tij[:3, 3]) * 100:.2f} cm")
 
 
 def main():

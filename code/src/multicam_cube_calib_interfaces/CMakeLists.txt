@@ -26,6 +26,8 @@ endif()
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/CameraMarker.msg"
   "msg/CamerasMarkersList.msg"
+  "msg/CubeObservation.msg"
+  "msg/PairMeasurement.msg"
   DEPENDENCIES std_msgs geometry_msgs
 )
 

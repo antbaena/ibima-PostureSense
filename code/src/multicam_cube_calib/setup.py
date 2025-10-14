@@ -20,6 +20,10 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'pair_builder_node = multicam_cube_calib.pair_builder_node:main',
+            'extrinsics_optimizer_node = multicam_cube_calib.extrinsics_optimizer_node:main',
+            'cube_detector_node = multicam_cube_calib.cube_detector_node:main',
+            'calibration_manager_node = multicam_cube_calib.calibration_manager_node:main',
         ],
     },
 )
