@@ -13,12 +13,14 @@ def generate_launch_description():
     common_args = {
         'device_num': '2',
         'sync_mode': 'standalone',
-        'color_fps': '5',
-        'depth_fps': '5',
-        'color_width': '424',
-        'color_height': '240',
-        'depth_width': '424',
-        'depth_height': '240',
+        'color_fps': '30',
+        'depth_fps': '30',
+        'color_width': '640',
+        'color_height': '480',
+        'depth_width': '640',
+        'depth_height': '480',
+        'enable_gyro': 'true',
+        'enable_accel': 'true',
 
         # Compresión + menos ancho de banda
         'color_format': 'MJPG',
@@ -50,7 +52,7 @@ def generate_launch_description():
         launch_arguments={
             **common_args,
             'camera_name': 'camera_01',
-            'serial_number': 'CP32942000G0',
+            'serial_number': 'CP828410006C',
         }.items()
     )
 
@@ -61,11 +63,11 @@ def generate_launch_description():
         launch_arguments={
             **common_args,
             'camera_name': 'camera_02',
-            'serial_number': 'CPCS2530001K',
+            'serial_number': 'CP329420002N',
         }.items()
     )
 
     return LaunchDescription([
         GroupAction([launch1_include]),
-        GroupAction([launch2_include]),
+        # GroupAction([launch2_include]),
     ])

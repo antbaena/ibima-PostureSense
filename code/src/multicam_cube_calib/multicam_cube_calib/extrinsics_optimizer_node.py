@@ -3,7 +3,7 @@ import rclpy, numpy as np
 from rclpy.node import Node
 from rclpy.qos import QoSProfile
 from multicam_cube_calib_interfaces.msg import PairMeasurement
-from multicam_cube_calib.srv import SaveCalibration
+from std_srvs.srv import Trigger
 from std_srvs.srv import Trigger
 from geometry_msgs.msg import TransformStamped
 from tf2_ros import TransformBroadcaster
@@ -44,7 +44,7 @@ class ExtrinsicsOptimizer(Node):
         self.srv_start = self.create_service(Trigger, 'start', self.srv_start_cb)
         self.srv_stop  = self.create_service(Trigger, 'stop',  self.srv_stop_cb)
         self.srv_reset = self.create_service(Trigger, 'reset', self.srv_reset_cb)
-        self.srv_save  = self.create_service(SaveCalibration, 'save', self.srv_save_cb)
+        self.srv_save  = self.create_service(Trigger, 'save', self.srv_save_cb)
 
         self.get_logger().info(f"Optimizer listo. Root={self.root}. Cámaras={self.cams}")
 
@@ -89,6 +89,7 @@ class ExtrinsicsOptimizer(Node):
 
     # ====== Sub y timer ======
     def on_pair(self, msg: PairMeasurement):
+        self.get_logger().info(f"Recibido par {msg.cam_i} -> {msg.cam_j} con peso {msg.weight:.4f}")
         # Convertir a matriz
         Tij = tf_to_mat(msg.t_i_to_j)
         wi = float(max(1e-6, msg.weight))
