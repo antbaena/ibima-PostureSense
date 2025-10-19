@@ -1,183 +1,167 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
-import math
-import numpy as np
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
-from sensor_msgs.msg import Image
-from cv_bridge import CvBridge, CvBridgeError
-from message_filters import Subscriber, ApproximateTimeSynchronizer
-
+from sensor_msgs.msg import Image, CameraInfo
+from cv_bridge import CvBridge
 import cv2
+import numpy as np
 
-def get_aruco_detector():
-    """
-    Devuelve un detector ArUco compatible con OpenCV 4.x,
-    usando el diccionario 5x5 (250 IDs).
-    """
-    try:
-        # OpenCV >= 4.7: API con ArucoDetector
-        aruco = cv2.aruco
-        dictionary = aruco.getPredefinedDictionary(aruco.DICT_5X5_250)
-        parameters = aruco.DetectorParameters()
-        detector = aruco.ArucoDetector(dictionary, parameters)
-        # Empaquetamos un callable con la misma firma que detectMarkers
-        def detect(gray):
-            corners, ids, _ = detector.detectMarkers(gray)
-            return corners, ids
-        return detect, dictionary
-    except AttributeError:
-        # OpenCV < 4.7: API clásica
-        aruco = cv2.aruco
-        dictionary = aruco.getPredefinedDictionary(aruco.DICT_5X5_250)
-        parameters = aruco.DetectorParameters_create()
-        def detect(gray):
-            corners, ids, _ = aruco.detectMarkers(gray, dictionary, parameters=parameters)
-            return corners, ids
-        return detect, dictionary
-
-def depth_to_meters(depth_patch, encoding):
-    """
-    Convierte una pequeña ventana de profundidad a metros.
-    Acepta:
-      - 16UC1 => milímetros (convierte a metros)
-      - 32FC1 => metros
-    Hace una mediana robusta ignorando 0/NaN/inf.
-    """
-    d = depth_patch.astype(np.float32).flatten()
-    if encoding == '16UC1':
-        d = d[d > 0.0]  # 0 => sin medida
-        if d.size == 0:
-            return float('nan')
-        return float(np.median(d)) / 1000.0
-    elif encoding == '32FC1':
-        d = d[np.isfinite(d) & (d > 0.0)]
-        if d.size == 0:
-            return float('nan')
-        return float(np.median(d))
-    else:
-        return float('nan')
-
-class ArucoDetectorNode(Node):
+class ArucoSubscriber(Node):
     def __init__(self):
-        super().__init__('aruco_detector')
+        super().__init__('aruco_subscriber')
 
-        # Parámetros (puedes sobreescribirlos por CLI)
-        self.declare_parameter('color_topic', '/camera_01_02/color/image_raw')
-        self.declare_parameter('depth_topic', '/camera_01_02/depth/image_raw')
-        self.declare_parameter('output_topic', '/aruco/overlay')
-        self.declare_parameter('sync_slop', 0.10)  # tolerancia de sincronización (s)
-        self.declare_parameter('depth_window', 5)  # px para estimar distancia
+        # --- Parámetros del usuario ---
+        self.image_topic = '/camera/color/image_raw'
+        self.camerainfo_topic = '/camera/color/camera_info'
+        self.marker_size = 0.16  # metros (EJEMPLO: 5 cm). ¡Cámbialo a tu tamaño real!
 
-        color_topic = self.get_parameter('color_topic').get_parameter_value().string_value
-        depth_topic = self.get_parameter('depth_topic').get_parameter_value().string_value
-        output_topic = self.get_parameter('output_topic').get_parameter_value().string_value
-        sync_slop = self.get_parameter('sync_slop').get_parameter_value().double_value
-
-        # QoS de sensores (BestEffort suele ir bien con cámaras)
-        sensor_qos = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
-            history=HistoryPolicy.KEEP_LAST,
-            depth=10
+        # --- Subscripciones ---
+        self.image_sub = self.create_subscription(
+            Image, self.image_topic, self.image_callback, 10
+        )
+        self.camerainfo_sub = self.create_subscription(
+            CameraInfo, self.camerainfo_topic, self.camerainfo_callback, 10
         )
 
-        # Subs + sincronizador aproximado
+        # --- Utilidades ---
         self.bridge = CvBridge()
-        self.color_sub = Subscriber(self, Image, color_topic, qos_profile=sensor_qos)
-        self.depth_sub = Subscriber(self, Image, depth_topic, qos_profile=sensor_qos)
-        self.ts = ApproximateTimeSynchronizer(
-            [self.color_sub, self.depth_sub],
-            queue_size=10,
-            slop=sync_slop,
-            allow_headerless=True
-        )
-        self.ts.registerCallback(self.sync_cb)
+        self.camera_info_received = False
+        self.camera_matrix = None
+        self.dist_coeffs = None
 
-        # Publicador de imagen anotada
-        self.pub = self.create_publisher(Image, output_topic, 10)
+        # --- ArUco ---
+        self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_50)
+        self.aruco_params = cv2.aruco.DetectorParameters()  # Para OpenCV >= 4.7
+        # Si usas OpenCV antiguo, cambia a:
+        # self.aruco_params = cv2.aruco.DetectorParameters_create()
 
-        # Detector ArUco
-        self.detect_aruco, self.aruco_dictionary = get_aruco_detector()
+        self.get_logger().info('ArucoSubscriber inicializado. Esperando CameraInfo...')
 
-        self.get_logger().info(
-            f'Listo. Subscribiendo: {color_topic} + {depth_topic} | Publicando: {output_topic}'
-        )
-
-    def sync_cb(self, color_msg: Image, depth_msg: Image):
+    # ---------- Callbacks ----------
+    def camerainfo_callback(self, msg: CameraInfo):
+        # Extraer K (3x3) y D (coef. distorsión) del CameraInfo
         try:
-            # A color BGR8 (si viene mono, CvBridge lo maneja)
-            frame = self.bridge.imgmsg_to_cv2(color_msg, desired_encoding='bgr8')
-            # Profundidad: mantenemos encoding original
-            depth = self.bridge.imgmsg_to_cv2(depth_msg, desired_encoding='passthrough')
-            depth_encoding = depth_msg.encoding
-        except CvBridgeError as e:
-            self.get_logger().warn(f'CvBridge error: {e}')
-            return
+            self.camera_matrix = np.array(msg.k, dtype=np.float64).reshape(3, 3)
+            self.dist_coeffs = np.array(msg.d, dtype=np.float64).reshape(-1, 1)  # (N,1)
+            self.camera_info_received = True
+            # Solo para confirmar una vez
+            self.get_logger().info(
+                f'CameraInfo recibido. K=\n{self.camera_matrix}\nD={self.dist_coeffs.ravel()}'
+            )
+            # Podemos desuscribirnos si solo quieres la primera vez:
+            # self.destroy_subscription(self.camerainfo_sub)
+        except Exception as e:
+            self.get_logger().error(f'Error procesando CameraInfo: {e}')
+            self.camera_info_received = False
 
-        # Detección ArUco
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        corners, ids = self.detect_aruco(gray)
+    def image_callback(self, msg: Image):
+        # Convertir imagen ROS -> OpenCV
+        frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+
+        # Detectar ArUco
+        corners, ids, _ = cv2.aruco.detectMarkers(
+            frame, self.aruco_dict, parameters=self.aruco_params
+        )
 
         if ids is not None and len(ids) > 0:
-            # Dibujar contornos/IDs
-            try:
-                cv2.aruco.drawDetectedMarkers(frame, corners, ids)
-            except Exception:
-                # En algunas versiones drawDetectedMarkers puede fallar con ids None
-                for cs, i in zip(corners, ids.flatten().tolist()):
-                    pts = cs.reshape(-1, 2).astype(int)
-                    for j in range(4):
-                        p1 = tuple(pts[j])
-                        p2 = tuple(pts[(j+1) % 4])
-                        cv2.line(frame, p1, p2, (0, 255, 0), 2)
-                    cx, cy = pts.mean(axis=0).astype(int).tolist()
-                    cv2.putText(frame, str(i), (cx, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+            cv2.aruco.drawDetectedMarkers(frame, corners, ids)
 
-            # Distancia (m) con una pequeña ventana alrededor del centro del marcador
-            win = int(self.get_parameter('depth_window').get_parameter_value().integer_value or 5)
-            if win < 1:
-                win = 1
+            # Solo estimamos pose si ya tenemos calibración
+            if self.camera_info_received and self.marker_size is not None:
+                try:
+                    rvecs, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(
+                        corners,
+                        self.marker_size,
+                        self.camera_matrix,
+                        self.dist_coeffs
+                    )
 
-            for cs, i in zip(corners, ids.flatten().tolist()):
-                pts = cs.reshape(-1, 2)
-                cx, cy = pts.mean(axis=0)
-                cx_i, cy_i = int(round(cx)), int(round(cy))
+                    # Dibujar ejes y mostrar datos
+                    axis_len = float(self.marker_size) * 0.5  # longitud visual de los ejes
+                    for i in range(len(ids)):
+                        # Ejes en el centro del ArUco (origen de su SR)
+                        self.draw_axis(
+                            frame,
+                            self.camera_matrix,
+                            self.dist_coeffs,
+                            rvecs[i],
+                            tvecs[i],
+                            axis_len
+                        )
 
-                # recortamos una ventana válida dentro de la imagen
-                x0 = max(cx_i - win//2, 0)
-                y0 = max(cy_i - win//2, 0)
-                x1 = min(cx_i + win//2 + 1, depth.shape[1])
-                y1 = min(cy_i + win//2 + 1, depth.shape[0])
+                        # Mostrar texto con ID y tvec (posición del marcador en SR de la cámara)
+                        t = tvecs[i][0]  # (x, y, z) en metros
+                        # Coordenadas 2D para ubicar el texto (esquina sup-izq del marcador)
+                        c = corners[i][0]
+                        x_txt, y_txt = int(c[0][0]), int(c[0][1]) - 10
 
-                d_m = depth_to_meters(depth[y0:y1, x0:x1], depth_encoding)
-                if math.isfinite(d_m):
-                    label = f'ID {i} | {d_m:.2f} m'
-                else:
-                    label = f'ID {i} | dist N/A'
+                        cv2.putText(
+                            frame,
+                            f'ID {int(ids[i])} | x={t[0]:.3f} y={t[1]:.3f} z={t[2]:.3f} m',
+                            (x_txt, max(y_txt, 20)),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.5,
+                            (0, 255, 0),
+                            2,
+                            cv2.LINE_AA
+                        )
+                except Exception as e:
+                    self.get_logger().warn(f'No se pudo estimar la pose: {e}')
+            else:
+                # Aviso visual si aún no hay CameraInfo
+                cv2.putText(
+                    frame,
+                    'Esperando /camera_info para dibujar ejes...',
+                    (20, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    (0, 0, 255),
+                    2,
+                    cv2.LINE_AA
+                )
 
-                cv2.putText(frame, label, (x0, max(0, y0 - 5)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+        # Mostrar imagen
+        cv2.imshow("Aruco Pose (ejes en el centro)", frame)
+        cv2.waitKey(1)
 
-        # Publicar imagen anotada (misma cabecera/frames que la de color)
-        try:
-            out_msg = self.bridge.cv2_to_imgmsg(frame, encoding='bgr8')
-            out_msg.header = color_msg.header  # conserva stamp/frame_id para RViz2
-            self.pub.publish(out_msg)
-        except CvBridgeError as e:
-            self.get_logger().warn(f'CvBridge error al publicar: {e}')
+    def draw_axis(self, img, camera_matrix, dist_coeffs, rvec, tvec, length=0.03):
+        # Ejes en el sistema del marcador (X, Y, Z)
+        axis = np.float32([
+            [length, 0, 0],   # eje X
+            [0, length, 0],   # eje Y
+            [0, 0, length],   # eje Z
+        ]).reshape(-1, 3)
+
+        # Origen (0,0,0)
+        origin = np.float32([[0, 0, 0]])
+
+        # Proyectar origen y ejes a la imagen
+        origin_2d, _ = cv2.projectPoints(origin, rvec, tvec, camera_matrix, dist_coeffs)
+        axes_2d, _ = cv2.projectPoints(axis, rvec, tvec, camera_matrix, dist_coeffs)
+
+        o = tuple(origin_2d.ravel().astype(int))
+        x = tuple(axes_2d[0].ravel().astype(int))
+        y = tuple(axes_2d[1].ravel().astype(int))
+        z = tuple(axes_2d[2].ravel().astype(int))
+
+        # Dibujar líneas (colores similares a OpenCV)
+        cv2.line(img, o, x, (0, 0, 255), 2)   # X - rojo
+        cv2.line(img, o, y, (0, 255, 0), 2)   # Y - verde
+        cv2.line(img, o, z, (255, 0, 0), 2)   # Z - azul
 
 
-def main():
-    rclpy.init()
-    node = ArucoDetectorNode()
+def main(args=None):
+    rclpy.init(args=args)
+    node = ArucoSubscriber()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
-    node.destroy_node()
-    rclpy.shutdown()
+    finally:
+        node.destroy_node()
+        cv2.destroyAllWindows()
+        rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()

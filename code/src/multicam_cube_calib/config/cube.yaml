@@ -1,29 +1,30 @@
 aruco:
   dictionary: DICT_5X5_100
-  marker_length_m: 0.08   # Lado del marcador en metros (ajústalo)
+  marker_length_m: 0.22
+  cube_edge_m: 0.31
 
-# Mapeo de ID de marcador a Transform marker->cube
-# Puedes usar formato con quaternion (q) y traslación (t):
-#   q: [qx, qy, qz, qw]  <- quaternion (¡cuidado con el orden!)
-#   t: [tx, ty, tz]      <- traslación en metros
-# O matriz de transformación 4x4 completa:
-#   T: [[...], [...], [...], [...]]
+# Transformaciones marker -> cube
 markers:
-  "0":
-    q: [0.0, 0.0, 0.0, 1.0]  # sin rotación
-    t: [0.0, 0.0, 0.0]        # en el centro del cubo
-  "1":
-    q: [0.0, 0.0, 0.0, 1.0]
-    t: [0.0, 0.0, 0.0]
-  "2":
-    q: [0.0, 0.0, 0.0, 1.0]
-    t: [0.0, 0.0, 0.0]
-  "3":
-    q: [0.0, 0.0, 0.0, 1.0]
-    t: [0.0, 0.0, 0.0]
-  "4":
-    q: [0.0, 0.0, 0.0, 1.0]
-    t: [0.0, 0.0, 0.0]
-  "5":
-    q: [0.0, 0.0, 0.0, 1.0]
-    t: [0.0, 0.0, 0.0]
+  "0":   # +Y (arriba)  ← ID 0
+    q: [ 0.70710678,  0.0,        0.0,        0.70710678 ]   # RotX(+90°)  [x,y,z,w]
+    t: [ 0.0,         0.0,       -0.155 ]
+
+  "1":   # +X (derecha) ← ID 1
+    q: [ 0.0,        -0.70710678, 0.0,        0.70710678 ]   # RotY(-90°)
+    t: [ 0.0,         0.0,       -0.155 ]
+
+  "2":   # -X (izquierda) ← ID 2
+    q: [ 0.0,         0.70710678, 0.0,        0.70710678 ]   # RotY(+90°)
+    t: [ 0.0,         0.0,       -0.155 ]
+
+  "3":   # -Z (detrás) ← ID 3
+    q: [ 0.0,         1.0,        0.0,        0.0       ]    # RotY(180°)
+    t: [ 0.0,         0.0,       -0.155 ]
+
+  "4":   # +Z (frente) ← ID 4, girado 180° en plano
+    q: [ 0.0,         0.0,        1.0,        0.0       ]    # RotZ(180°)
+    t: [ 0.0,         0.0,       -0.155 ]
+
+  "5":   # -Y (abajo) ← ID 5
+    q: [-0.70710678,  0.0,        0.0,        0.70710678 ]   # RotX(-90°)
+    t: [ 0.0,         0.0,       -0.155 ]

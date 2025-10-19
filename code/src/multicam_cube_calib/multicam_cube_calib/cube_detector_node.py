@@ -29,8 +29,8 @@ class MultiCameraMarkersSync(Node):
         super().__init__('cube_markers_sync')
 
         # Parámetros
-        self.declare_parameter('cameras', ['camera_01', 'camera_02'])
-        self.declare_parameter('image_topic_tpl', '/{}/color/image_raw')
+        self.declare_parameter('cameras', ['cam00/camera_00', 'cam00/camera_01', 'cam01/camera_02', 'cam02/camera_03'])
+        self.declare_parameter('image_topic_tpl', '/{}/color/image_raw/decompressed')
         self.declare_parameter('caminfo_topic_tpl', '/{}/color/camera_info')
         self.declare_parameter('output_topic', '/camera_markers_sync')
 

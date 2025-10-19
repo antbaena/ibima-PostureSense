@@ -14,8 +14,8 @@ import yaml, os, time
 class ExtrinsicsOptimizer(Node):
     def __init__(self):
         super().__init__('extrinsics_optimizer')
-        self.declare_parameter('root_camera', 'cam0')
-        self.declare_parameter('cameras', ['cam0','cam1'])
+        self.declare_parameter('root_camera', 'cam00/camera_00')
+        self.declare_parameter('cameras', ['cam00/camera_00','cam00/camera_01','cam01/camera_02', 'cam02/camera_03'])
         self.declare_parameter('max_pairs', 1000)
         self.declare_parameter('optimize_rate_hz', 5.0)
         self.declare_parameter('use_huber', True)
@@ -53,6 +53,7 @@ class ExtrinsicsOptimizer(Node):
         self.running = True
         res.success = True
         res.message = 'Calibración en marcha'
+        self.get_logger().info("Calibración iniciada")
         return res
 
     def srv_stop_cb(self, req, res):
@@ -89,7 +90,7 @@ class ExtrinsicsOptimizer(Node):
 
     # ====== Sub y timer ======
     def on_pair(self, msg: PairMeasurement):
-        self.get_logger().info(f"Recibido par {msg.cam_i} -> {msg.cam_j} con peso {msg.weight:.4f}")
+        self.get_logger().debug(f"Recibido par {msg.cam_i} -> {msg.cam_j} con peso {msg.weight:.4f}")
         # Convertir a matriz
         Tij = tf_to_mat(msg.t_i_to_j)
         wi = float(max(1e-6, msg.weight))
@@ -100,10 +101,12 @@ class ExtrinsicsOptimizer(Node):
         self.pairs.append((i, j, Tij, wi))
 
     def on_timer(self):
+        self.get_logger().info(f"Timer de optimización activado, pares acumulados: {len(self.pairs)}")
         # Publica TF siempre con el último estado
         self.publish_tf()
         if not self.running or len(self.pairs) < 3:
             return
+        self.get_logger().info(f'Optimizando con {len(self.pairs)} pares...')
         # Hacer 2-3 iteraciones GN sobre ventana
         for _ in range(3):
             H, b = self.build_normal_equations()

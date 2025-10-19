@@ -20,7 +20,7 @@ class PairBuilder(Node):
         super().__init__('pair_builder')
 
         # Parámetros
-        self.declare_parameter('markers_topic', '/camera_markers_sync')
+        self.declare_parameter('markers_topic', '/camera_markers_async')
         self.declare_parameter('cube_config', '/home/mapir/ibima-PostureSense/code/src/multicam_cube_calib/config/cube.yaml')
         self.declare_parameter('publish_topic', '/calib/pairs')
 
@@ -75,7 +75,7 @@ class PairBuilder(Node):
     def on_markers(self, msg: CamerasMarkersList):
         #SI al menos dos camaras tienen detecciones continuar
         if sum(1 for cam_msg in msg.cameras if len(cam_msg.marker_ids) > 0) < 2:
-            self.get_logger().debug("Menos de dos cámaras con detecciones, ignorando")
+            self.get_logger().info("Menos de dos cámaras con detecciones, ignorando")
             return
         # Construir mapa cam -> t_cam_to_cube usando el mejor marcador disponible
         cam_to_cube = {}
