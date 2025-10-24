@@ -3,6 +3,7 @@ from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, Grou
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from ament_index_python.packages import get_package_share_directory
 import os
+from launch_ros.actions import PushRosNamespace
 
 
 def generate_launch_description():
@@ -21,6 +22,7 @@ def generate_launch_description():
         'depth_height': '480',
         'enable_gyro': 'true',
         'enable_accel': 'true',
+        'depth_registration': 'true',
 
         # Compresión + menos ancho de banda
         'color_format': 'MJPG',
@@ -51,8 +53,9 @@ def generate_launch_description():
         ),
         launch_arguments={
             **common_args,
-            'camera_name': 'camera_01',
-            'serial_number': 'CP828410006C',
+            'sync_mode': 'primary',
+            'camera_name': 'camera_00',
+            'serial_number': 'CP32942000G0',
         }.items()
     )
 
@@ -62,12 +65,16 @@ def generate_launch_description():
         ),
         launch_arguments={
             **common_args,
-            'camera_name': 'camera_02',
+            'sync_mode': 'secondary',
+            'depth_delay_us': '16',
+            'color_delay_us': '16',
+            'camera_name': 'camera_01',
             'serial_number': 'CP329420002N',
         }.items()
     )
 
     return LaunchDescription([
+        PushRosNamespace('cam00'),
         GroupAction([launch1_include]),
-        # GroupAction([launch2_include]),
+        GroupAction([launch2_include]),
     ])
