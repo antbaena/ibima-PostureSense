@@ -28,3 +28,5 @@ metadata.yaml
 /gui/build
 code/test_full_setup/
 code/test_full_setup.zip
+/code/src/camera_postprocess/camera_postprocess/__pycache__
+/Log
