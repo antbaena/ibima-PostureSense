@@ -15,14 +15,18 @@ Uncompressor::Uncompressor(const rclcpp::NodeOptions & options)
   get_parameter("input_topic", input_topic_);
   get_parameter("output_topic", output_topic_);
   get_parameter("queue_size", queue_size_);
+// QoS para cámaras = Best Effort + baja latencia
+  auto qos = rclcpp::SensorDataQoS()
+                .keep_last(queue_size_)
+                .reliability(rclcpp::ReliabilityPolicy::BestEffort);
 
   sub_ = create_subscription<sensor_msgs::msg::CompressedImage>(
-    input_topic_, queue_size_,
+    input_topic_, qos,
     std::bind(&Uncompressor::topic_callback, this, _1)
   );
 
   pub_ = create_publisher<sensor_msgs::msg::Image>(
-    output_topic_, rclcpp::QoS(queue_size_)
+    output_topic_, qos
   );
 
   RCLCPP_INFO(get_logger(), "Subscribing to '%s', publishing to '%s'",
