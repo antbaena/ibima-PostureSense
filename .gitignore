@@ -30,3 +30,7 @@ code/test_full_setup/
 code/test_full_setup.zip
 /code/src/camera_postprocess/camera_postprocess/__pycache__
 /Log
+log/build_2025-11-07_16-06-27/multicam_cube_calib/streams.log
+/log
+/install
+/build
