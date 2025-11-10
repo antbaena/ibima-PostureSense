@@ -1,5 +1,6 @@
 from setuptools import find_packages, setup
-
+import os
+import glob
 package_name = 'multicam_cube_calib'
 
 setup(
@@ -10,6 +11,8 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        (os.path.join('share', package_name, 'launch'), glob.glob('launch/*.launch.py')),
+
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -26,6 +29,11 @@ setup(
             'cube_detector_node = multicam_cube_calib.cube_detector_node:main',
             'cube_detector_unsync_node = multicam_cube_calib.cube_detector_unsync_node:main',
             'calibration_manager_node = multicam_cube_calib.calibration_manager_node:main',
+            'synchronized_pair_ICP_publisher_node = multicam_cube_calib.synchronized_pair_ICP_publisher_node:main',
+            'synchronized_pair_PnP_publisher_node = multicam_cube_calib.synchronized_pair_PnP_publisher_node:main',
+            'multicam_cube_localizer = multicam_cube_calib.multicam_cube_localizer:main',
+            'depth_to_pointcloud_plotter = multicam_cube_calib.depth_to_pointcloud_plotter:main',
+            'pose_viz_node = multicam_cube_calib.pose_viz_node:main',
         ],
     },
 )

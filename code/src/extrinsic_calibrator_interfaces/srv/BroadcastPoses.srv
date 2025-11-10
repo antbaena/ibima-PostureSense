@@ -1,4 +1,0 @@
-extrinsic_calibrator_interfaces/CameraTransform[] poses
----
-bool success
-string message

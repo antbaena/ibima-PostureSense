@@ -1,258 +1,497 @@
 #!/usr/bin/env python3
-import rclpy, numpy as np
+# -*- coding: utf-8 -*-
+
+import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile
-from multicam_cube_calib_interfaces.msg import PairMeasurement
+from rclpy.qos import QoSProfile, DurabilityPolicy
+import threading
+import numpy as np
+from typing import Dict, List, Tuple, Optional
+
+# Mensajes
+from multicam_cube_calib_interfaces.msg import CameraPairPose
+from geometry_msgs.msg import PoseWithCovariance, TransformStamped, Transform
 from std_srvs.srv import Trigger
-from std_srvs.srv import Trigger
-from geometry_msgs.msg import TransformStamped
-from tf2_ros import TransformBroadcaster
-from collections import deque, defaultdict
-from multicam_cube_calib.se3 import tf_to_mat, mat_to_tf, so3_log, so3_exp
-import yaml, os, time
+from tf2_msgs.msg import TFMessage
 
-class ExtrinsicsOptimizer(Node):
-    def __init__(self):
-        super().__init__('extrinsics_optimizer')
-        self.declare_parameter('root_camera', 'cam00/camera_00')
-        self.declare_parameter('cameras', ['cam00/camera_00','cam00/camera_01','cam01/camera_02', 'cam02/camera_03'])
-        self.declare_parameter('max_pairs', 1000)
-        self.declare_parameter('optimize_rate_hz', 5.0)
-        self.declare_parameter('use_huber', True)
-        self.declare_parameter('huber_delta', 0.1)
 
-        self.root = self.get_parameter('root_camera').get_parameter_value().string_value
-        self.cams = list(self.get_parameter('cameras').get_parameter_value().string_array_value)
-        self.max_pairs = int(self.get_parameter('max_pairs').get_parameter_value().integer_value)
-        self.use_huber = bool(self.get_parameter('use_huber').get_parameter_value().bool_value)
-        self.huber_delta = float(self.get_parameter('huber_delta').get_parameter_value().double_value)
-        self.optimize_dt = 1.0/float(self.get_parameter('optimize_rate_hz').get_parameter_value().double_value)
+# =======================
+#  Utilidades SO(3)/SE(3)
+# =======================
 
-        # Estado: transform cam->root (root = identidad)
-        self.cam_index = {c:i for i,c in enumerate(self.cams)}
-        self.X = [np.eye(4) for _ in self.cams]  # X[k]: T_root->cam_k (publicaremos root->cam)
-        # Medidas acumuladas (ventana)
-        self.pairs = deque(maxlen=self.max_pairs)
+def _hat3(w):
+    x, y, z = w
+    return np.array([[0, -z, y],
+                     [z, 0, -x],
+                     [-y, x, 0]], dtype=float)
 
-        self.running = False
+def _vee3(W):
+    return np.array([W[2,1]-W[1,2], W[0,2]-W[2,0], W[1,0]-W[0,1]])*0.5
 
-        self.sub = self.create_subscription(PairMeasurement, '/calib/pairs', self.on_pair, QoSProfile(depth=50))
-        self.broadcaster = TransformBroadcaster(self)
-        self.timer = self.create_timer(self.optimize_dt, self.on_timer)
+def so3_exp(phi):
+    theta = np.linalg.norm(phi)
+    W = _hat3(phi)
+    if theta < 1e-12:
+        A = 1 - theta**2/6 + theta**4/120
+        B = 0.5 - theta**2/24 + theta**4/720
+    else:
+        A = np.sin(theta)/theta
+        B = (1 - np.cos(theta))/theta**2
+    return np.eye(3) + A*W + B*(W@W)
 
-        # Servicios
-        self.srv_start = self.create_service(Trigger, 'start', self.srv_start_cb)
-        self.srv_stop  = self.create_service(Trigger, 'stop',  self.srv_stop_cb)
-        self.srv_reset = self.create_service(Trigger, 'reset', self.srv_reset_cb)
-        self.srv_save  = self.create_service(Trigger, 'save', self.srv_save_cb)
+def so3_log(R):
+    c = (np.trace(R)-1)/2
+    c = np.clip(c, -1.0, 1.0)
+    theta = np.arccos(c)
+    if theta < 1e-12:
+        return np.zeros(3)
+    if np.pi - theta < 1e-6:
+        d = np.diag(R)
+        k = int(np.argmax(d))
+        v = np.zeros(3)
+        v[k] = np.sqrt(max(0.0, (d[k]+1)/2))
+        j, l = (k+1) % 3, (k+2) % 3
+        v[j] = (R[j,k]+R[k,j])/(4*v[k] + 1e-12)
+        v[l] = (R[l,k]+R[k,l])/(4*v[k] + 1e-12)
+        v = v/np.linalg.norm(v)
+        return theta*v
+    W = (R - R.T)/(2*np.sin(theta))
+    return theta*_vee3(W)
 
-        self.get_logger().info(f"Optimizer listo. Root={self.root}. Cámaras={self.cams}")
+def _left_jac_SO3_inv(phi):
+    theta = np.linalg.norm(phi)
+    I = np.eye(3)
+    if theta < 1e-8:
+        W = _hat3(phi)
+        return I + 0.5*W + (1/12)*(W@W)
+    half = 0.5*theta
+    cot_half = np.cos(half)/np.sin(half)
+    W = _hat3(phi)
+    return I - 0.5*W + (1 - theta*cot_half)/(theta**2) * (W@W)
 
-    # ====== Servicios ======
-    def srv_start_cb(self, req, res):
-        self.running = True
-        res.success = True
-        res.message = 'Calibración en marcha'
-        self.get_logger().info("Calibración iniciada")
-        return res
-
-    def srv_stop_cb(self, req, res):
-        self.running = False
-        res.success = True
-        res.message = 'Calibración detenida'
-        return res
-
-    def srv_reset_cb(self, req, res):
-        self.pairs.clear()
-        self.X = [np.eye(4) for _ in self.cams]
-        self.running = False
-        res.success = True
-        res.message = 'Estado reseteado'
-        return res
-
-    def srv_save_cb(self, req, res):
-        try:
-            path = req.filepath if req.filepath else f'/tmp/extrinsics_{int(time.time())}.yaml'
-            data = {'root': self.root, 'cameras': {}}
-            for c, Xc in zip(self.cams, self.X):
-                # Guardamos root->cam como [qx,qy,qz,qw, tx,ty,tz]
-                from multicam_cube_calib.se3 import mat_to_quat_trans
-                q, t = mat_to_quat_trans(Xc)
-                data['cameras'][c] = {'q': list(q), 't': list(t)}
-            with open(path, 'w') as f:
-                yaml.safe_dump(data, f)
-            res.success = True
-            res.message = f'Guardado en {path}'
-        except Exception as e:
-            res.success = False
-            res.message = f'Error guardando: {e}'
-        return res
-
-    # ====== Sub y timer ======
-    def on_pair(self, msg: PairMeasurement):
-        self.get_logger().debug(f"Recibido par {msg.cam_i} -> {msg.cam_j} con peso {msg.weight:.4f}")
-        # Convertir a matriz
-        Tij = tf_to_mat(msg.t_i_to_j)
-        wi = float(max(1e-6, msg.weight))
-        i = self.cam_index.get(msg.cam_i, None)
-        j = self.cam_index.get(msg.cam_j, None)
-        if i is None or j is None:
-            return
-        self.pairs.append((i, j, Tij, wi))
-
-    def on_timer(self):
-        self.get_logger().info(f"Timer de optimización activado, pares acumulados: {len(self.pairs)}")
-        # Publica TF siempre con el último estado
-        self.publish_tf()
-        if not self.running or len(self.pairs) < 3:
-            return
-        self.get_logger().info(f'Optimizando con {len(self.pairs)} pares...')
-        # Hacer 2-3 iteraciones GN sobre ventana
-        for _ in range(3):
-            H, b = self.build_normal_equations()
-            # Fijar root: su bloque no se optimiza (X[root]=I). Ya que root podría no ser índice 0, manejamos al construir H.
-            # Resolver
-            try:
-                delta = np.linalg.lstsq(H, -b, rcond=None)[0]
-            except np.linalg.LinAlgError:
-                break
-            # Aplicar actualización pequeña
-            self.apply_delta(delta)
-            # Parada si pequeño
-            if np.linalg.norm(delta) < 1e-6:
-                break
-
-    # ====== Optimización ======
-    def build_normal_equations(self):
-        n = len(self.cams)
-        # variables: todas excepto root -> (n-1)*6
-        var_map = {}
-        idx = 0
-        for k,c in enumerate(self.cams):
-            if c == self.root:
-                continue
-            var_map[k] = (idx, idx+6)
-            idx += 6
-        m = idx
-        H = np.zeros((m,m))
-        b = np.zeros(m)
-        for (i, j, Z, w) in list(self.pairs):
-            # residual r = Log( Z^-1 * Xi^-1 * Xj )  -> approx: [t; log(R)]
-            Xi = self.X[i]
-            Xj = self.X[j]
-            M = np.linalg.inv(Z) @ np.linalg.inv(Xi) @ Xj
-            r = np.zeros(6)
-            r[:3] = M[:3,3]
-            r[3:] = so3_log(M[:3,:3])
-            # robustez
-            if self.use_huber:
-                nl = np.linalg.norm(r)
-                delta = self.huber_delta
-                if nl <= delta:
-                    rw = 1.0
-                else:
-                    rw = delta / nl
-            else:
-                rw = 1.0
-            r = rw * w * r
-
-            # Jacobianos numéricos sobre Xi y Xj (si son variables)
-            eps = 1e-5
-            def res_func(Xi_new, Xj_new):
-                M2 = np.linalg.inv(Z) @ np.linalg.inv(Xi_new) @ Xj_new
-                rr = np.zeros(6)
-                rr[:3] = M2[:3,3]
-                rr[3:] = so3_log(M2[:3,:3])
-                return rr
-
-            J_i = None
-            J_j = None
-            if i in var_map:
-                J_i = np.zeros((6,6))
-                for k in range(6):
-                    d = np.zeros(6); d[k] = eps
-                    Xi_p = Xi @ se3_inc(d)  # left inc sobre Xi
-                    rp = res_func(Xi_p, Xj)
-                    J_i[:,k] = (rp - r) / eps
-                J_i = rw * w * J_i
-            if j in var_map:
-                J_j = np.zeros((6,6))
-                for k in range(6):
-                    d = np.zeros(6); d[k] = eps
-                    Xj_p = Xj @ se3_inc(d)
-                    rp = res_func(Xi, Xj_p)
-                    J_j[:,k] = (rp - r) / eps
-                J_j = rw * w * J_j
-
-            # Acumular en H,b
-            if i in var_map:
-                a,b_i = var_map[i]
-                ri = r.copy()
-                if j in var_map:
-                    a2,b_j = var_map[j]
-                    H[a:b_i, a:b_i] += J_i.T @ J_i
-                    H[a:b_i, a2:b_j] += J_i.T @ J_j
-                    H[a2:b_j, a:b_i] += J_j.T @ J_i
-                    H[a2:b_j, a2:b_j] += J_j.T @ J_j
-                    b_vec = J_i.T @ ri
-                    b[a:b_i] += b_vec
-                    b[a2:b_j] += J_j.T @ ri
-                else:
-                    H[a:b_i, a:b_i] += J_i.T @ J_i
-                    b[a:b_i] += J_i.T @ ri
-            elif j in var_map:
-                a2,b_j = var_map[j]
-                H[a2:b_j, a2:b_j] += J_j.T @ J_j
-                b[a2:b_j] += J_j.T @ r
-        # Damping leve para estabilidad
-        H += 1e-6*np.eye(H.shape[0])
-        return H, b
-
-    def apply_delta(self, delta):
-        # Aplicación por bloques de 6
-        var_blocks = []
-        for k,c in enumerate(self.cams):
-            if c == self.root:
-                var_blocks.append(None)
-                continue
-            var_blocks.append(k)
-        ptr = 0
-        for k,c in enumerate(self.cams):
-            if c == self.root:
-                continue
-            d = delta[ptr:ptr+6]
-            ptr += 6
-            self.X[k] = self.X[k] @ se3_inc(d)
-
-    def publish_tf(self):
-        # Publicar root->cam TF dinámico
-        now = self.get_clock().now().to_msg()
-        for c, Xc in zip(self.cams, self.X):
-            t = TransformStamped()
-            t.header.stamp = now
-            t.header.frame_id = self.root
-            t.child_frame_id = c
-            from multicam_cube_calib.se3 import mat_to_tf
-            t.transform = mat_to_tf(Xc)
-            self.broadcaster.sendTransform(t)
-
-# Helpers SE3 incrementales
-from multicam_cube_calib.se3 import so3_exp
-
-def se3_inc(d):
-    v = d[:3]; w = d[3:]
-    T = np.eye(4)
-    T[:3,:3] = so3_exp(w)
-    T[:3,3] = v
+def se3_exp(xi):
+    rho = np.asarray(xi[:3]); phi = np.asarray(xi[3:])
+    R = so3_exp(phi)
+    theta = np.linalg.norm(phi)
+    I = np.eye(3); W = _hat3(phi)
+    if theta < 1e-12:
+        V = I + 0.5*W + (1/6)*(W@W)
+    else:
+        V = I + (1-np.cos(theta))/theta**2 * W + (theta-np.sin(theta))/theta**3 * (W@W)
+    t = V @ rho
+    T = np.eye(4); T[:3,:3]=R; T[:3,3]=t
     return T
 
+def se3_log(T):
+    R = T[:3,:3]; t = T[:3,3]
+    phi = so3_log(R)
+    V_inv = _left_jac_SO3_inv(phi)
+    rho = V_inv @ t
+    return np.r_[rho, phi]
 
-def main():
-    rclpy.init()
-    node = ExtrinsicsOptimizer()
+def adjoint_SE3(T):
+    R = T[:3,:3]; t = T[:3,3]
+    Ad = np.zeros((6,6))
+    Ad[:3,:3] = R
+    Ad[3:,3:] = R
+    Ad[3:,:3] = _hat3(t) @ R
+    return Ad
+
+# Quaternion/Rot-mat helpers (sin dependencias externas)
+def quat_to_rotmat(qx, qy, qz, qw):
+    # asegura normalización
+    n = np.sqrt(qx*qx + qy*qy + qz*qz + qw*qw)
+    if n == 0:
+        return np.eye(3)
+    qx, qy, qz, qw = qx/n, qy/n, qz/n, qw/n
+    R = np.array([
+        [1-2*(qy*qy+qz*qz),   2*(qx*qy - qz*qw),   2*(qx*qz + qy*qw)],
+        [2*(qx*qy + qz*qw),   1-2*(qx*qx+qz*qz),   2*(qy*qz - qx*qw)],
+        [2*(qx*qz - qy*qw),   2*(qy*qz + qx*qw),   1-2*(qx*qx+qy*qy)]
+    ], dtype=float)
+    return R
+
+def rotmat_to_quat(R):
+    # devuelve (x,y,z,w)
+    tr = R[0,0] + R[1,1] + R[2,2]
+    if tr > 0:
+        S = np.sqrt(tr + 1.0) * 2
+        qw = 0.25 * S
+        qx = (R[2,1] - R[1,2]) / S
+        qy = (R[0,2] - R[2,0]) / S
+        qz = (R[1,0] - R[0,1]) / S
+    else:
+        if (R[0,0] > R[1,1]) and (R[0,0] > R[2,2]):
+            S = np.sqrt(1.0 + R[0,0] - R[1,1] - R[2,2]) * 2
+            qx = 0.25 * S
+            qy = (R[0,1] + R[1,0]) / S
+            qz = (R[0,2] + R[2,0]) / S
+            qw = (R[2,1] - R[1,2]) / S
+        elif R[1,1] > R[2,2]:
+            S = np.sqrt(1.0 + R[1,1] - R[0,0] - R[2,2]) * 2
+            qx = (R[0,1] + R[1,0]) / S
+            qy = 0.25 * S
+            qz = (R[1,2] + R[2,1]) / S
+            qw = (R[0,2] - R[2,0]) / S
+        else:
+            S = np.sqrt(1.0 + R[2,2] - R[0,0] - R[1,1]) * 2
+            qx = (R[0,2] + R[2,0]) / S
+            qy = (R[1,2] + R[2,1]) / S
+            qz = 0.25 * S
+            qw = (R[1,0] - R[0,1]) / S
+    q = np.array([qx, qy, qz, qw], dtype=float)
+    q = q / np.linalg.norm(q)
+    return q
+
+# Pérdida robusta
+def _robust_weight(norm, c=1.345, kind='huber'):
+    z = norm/c if c > 0 else norm
+    if kind == 'huber':
+        return 1.0 if norm <= c else (c/(norm+1e-12))
+    if kind == 'cauchy':
+        return 1.0/(1.0+z*z)
+    if kind == 'tukey':
+        return (1 - z*z)**2 if abs(z) < 1 else 0.0
+    return 1.0  # none
+
+
+def se3_average(transforms: List[np.ndarray],
+                covariances: List[np.ndarray],
+                loss: str = 'huber',
+                c: float = 1.5,
+                max_iters: int = 60,
+                tol: float = 1e-9,
+                meters_per_radian: Optional[float] = None
+               ) -> Tuple[np.ndarray, np.ndarray, float]:
+    """
+    Estima la media robusta en SE(3) (MLE con M-estimador).
+    """
+    Ts = [np.asarray(T, float) for T in transforms]
+    Sigmas = [np.asarray(S, float) for S in covariances]
+
+    # Inicialización: media chordal para R + media de t
+    Rm = sum(T[:3,:3] for T in Ts)/len(Ts)
+    U,S,Vt = np.linalg.svd(Rm)
+    R0 = U@Vt
+    if np.linalg.det(R0) < 0:
+        U[:,-1] *= -1
+        R0 = U@Vt
+    t0 = sum(T[:3,3] for T in Ts)/len(Ts)
+    T_hat = np.eye(4); T_hat[:3,:3] = R0; T_hat[:3,3] = t0
+
+    # Escala opcional m/rad
+    Sscale = np.eye(6) if meters_per_radian in (None, 0.0) else np.diag(
+        [1.0/(meters_per_radian)]*3 + [1,1,1]
+    )
+
+    # Información = Σ⁻¹
+    Infos = []
+    for Sigma in Sigmas:
+        Sigma = 0.5*(Sigma + Sigma.T)
+        try:
+            Info = np.linalg.inv(Sigma)
+        except np.linalg.LinAlgError:
+            Info = np.linalg.pinv(Sigma + 1e-9*np.eye(6))
+        Infos.append(Info)
+
+    def cost(Tcur):
+        tot = 0.0
+        for T, Info in zip(Ts, Infos):
+            r = Sscale @ se3_log(np.linalg.inv(Tcur) @ T)
+            n = np.sqrt(r.T @ (Info @ r) + 1e-16)
+            if loss == 'huber':
+                tot += 0.5*n*n if n <= c else c*n - 0.5*c*c
+            elif loss == 'cauchy':
+                z = n/c if c>0 else n
+                tot += 0.5*c*c*np.log1p(z*z)
+            elif loss == 'tukey':
+                z = n/c if c>0 else n
+                tot += (c*c/6.0)*(1-(1-z*z)**3) if abs(z) < 1 else (c*c/6.0)
+            else:
+                tot += 0.5*n*n
+        return tot
+
+    prev = cost(T_hat)
+    H_last = np.eye(6)
+
+    for _ in range(max_iters):
+        H = np.zeros((6,6)); b = np.zeros(6)
+        for T, Info in zip(Ts, Infos):
+            r = Sscale @ se3_log(np.linalg.inv(T_hat) @ T)
+            n = np.sqrt(r.T @ (Info @ r) + 1e-16)
+            w = _robust_weight(n, c, loss)
+            WI = w * Info
+            H += WI
+            b += WI @ r
+        H += 1e-9*np.eye(6)
+        try:
+            delta_scaled = np.linalg.solve(H, b)
+        except np.linalg.LinAlgError:
+            delta_scaled = np.linalg.lstsq(H, b, rcond=None)[0]
+        delta = np.linalg.inv(Sscale) @ delta_scaled
+
+        # line-search para asegurar descenso
+        alpha = 1.0
+        improved = False
+        for _ in range(10):
+            T_try = T_hat @ se3_exp(alpha*delta)
+            c_try = cost(T_try)
+            if c_try < prev - 1e-14:
+                T_hat, prev = T_try, c_try
+                improved = True
+                break
+            alpha *= 0.5
+        if not improved and np.linalg.norm(delta) < tol:
+            break
+        if np.linalg.norm(delta) < tol:
+            break
+        H_last = H.copy()
+
+    Cov_est = np.linalg.inv(H_last)
+    return T_hat, Cov_est, prev
+
+
+# ======================
+#  Nodo ROS2 principal
+# ======================
+
+class ExtrinsicCalibrationOptimizer(Node):
+    """
+    Nodo de backend de optimización por lotes para la calibración extrínseca multi-cámara.
+    Estima, para cada cámara != raíz, la transformación raíz->cámara como media robusta de múltiples mediciones.
+    """
+    def __init__(self):
+        super().__init__('extrinsic_calibration_optimizer')
+
+        # --- Parámetros ---
+        self.declare_parameter('root_frame_id', 'cam01/camera_02')
+        self.declare_parameter('camera_names', ['cam01/camera_02', 'cam02/camera_03'])
+        self.declare_parameter('link_names', ['camera_02_color_optical_frame', 'camera_03_color_optical_frame'])
+        self.declare_parameter('input_topic', '/calib/pairs_posecov')
+        self.declare_parameter('loss', 'huber')        # 'huber'|'cauchy'|'tukey'|'none'
+        self.declare_parameter('loss_c', 1.5)
+        self.declare_parameter('meters_per_radian', 0.0)  # 0.0 => desactivado
+
+        self.root_frame_id_ = self.get_parameter('root_frame_id').value
+        self.camera_names_ = self.get_parameter('camera_names').value
+        self.link_names_ = self.get_parameter('link_names').value
+        self.input_topic_ = self.get_parameter('input_topic').value
+        self.loss_ = self.get_parameter('loss').value
+        self.loss_c_ = float(self.get_parameter('loss_c').value)
+        self.mpr_ = float(self.get_parameter('meters_per_radian').value)
+
+        if len(self.link_names_) != len(self.camera_names_):
+            self.get_logger().fatal("'camera_names' y 'link_names' deben tener la misma longitud")
+            raise ValueError("camera_names/link_names mismatch")
+
+        self.camera_name_to_link_ = {name: link for name, link in zip(self.camera_names_, self.link_names_)}
+
+        if self.root_frame_id_ not in self.camera_names_:
+            self.get_logger().fatal(f"La cámara raíz '{self.root_frame_id_}' no está en 'camera_names'.")
+            raise ValueError("Cámara raíz no encontrada")
+
+        # --- Almacenamiento de Datos ---
+        self.measurement_buffer_: List[CameraPairPose] = []
+        self.buffer_mutex_ = threading.Lock()
+
+        # --- Publicador de TF Estáticas ---
+        tf_static_qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self.tf_static_pub_ = self.create_publisher(TFMessage, '/tf_static', tf_static_qos)
+
+        # --- Suscriptor de Mediciones ---
+        self.measurement_sub_ = self.create_subscription(
+            CameraPairPose, self.input_topic_, self.pair_measurement_callback, 100
+        )
+        self.get_logger().info(f"Suscrito a mediciones en: {self.input_topic_}")
+
+        # --- Servidor de Optimización ---
+        self.optimization_srv_ = self.create_service(
+            Trigger, '~/trigger_optimization', self.optimization_service_callback
+        )
+        self.get_logger().info("Nodo ExtrinsicCalibrationOptimizer listo.")
+
+    # ================
+    #  Callbacks ROS2
+    # ================
+
+    def pair_measurement_callback(self, msg: CameraPairPose):
+        """Acumula mediciones en el buffer de forma segura."""
+        if msg.camera_from_id not in self.camera_names_ or msg.camera_to_id not in self.camera_names_:
+            self.get_logger().warn(
+                f"Medición con cámaras desconocidas: {msg.camera_from_id} -> {msg.camera_to_id}. Descartada."
+            )
+            return
+        with self.buffer_mutex_:
+            self.measurement_buffer_.append(msg)
+        self.get_logger().info(f"Medición recibida: {msg.camera_from_id} -> {msg.camera_to_id}")
+
+    def optimization_service_callback(self, request: Trigger.Request, response: Trigger.Response):
+        """Dispara la optimización por lotes con todas las mediciones."""
+        self.get_logger().info("Llamada al servicio de optimización recibida.")
+        optimized_poses_map = self.run_optimization()
+
+        if optimized_poses_map is not None:
+            self.get_logger().info("Optimización exitosa.")
+            self.publish_static_transforms(optimized_poses_map)
+            response.success = True
+            response.message = "Optimización completada. TFs publicadas."
+        else:
+            self.get_logger().error("La optimización falló.")
+            response.success = False
+            response.message = "Fallo en la optimización (ver logs)."
+        return response
+
+    # ======================
+    #  Lógica de optimización
+    # ======================
+
+    def _msg_to_T_Sigma(self, m: CameraPairPose) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        """
+        Extrae (T, Sigma) de un CameraPairPose admitiendo variantes:
+        - PoseWithCovariance en m.pose
+        - Transform + covariance en m.transform / m.covariance
+        Devuelve None si falta información.
+        """
+        if hasattr(m, 'measured_transform') and isinstance(m.measured_transform, PoseWithCovariance):
+                p = m.measured_transform.pose.position
+                q = m.measured_transform.pose.orientation
+                R = quat_to_rotmat(q.x, q.y, q.z, q.w)
+                t = np.array([p.x, p.y, p.z], dtype=float)
+                T = np.eye(4); T[:3,:3] = R; T[:3,3] = t
+                cov = np.array(m.measured_transform.covariance, dtype=float).reshape(6,6)
+                cov = 0.5*(cov + cov.T)
+                return T, cov
+
+        self.get_logger().warn("No se pudo extraer (T,Σ) de la medición; comprueba el mensaje CameraPairPose.")
+        return None
+
+    def run_optimization(self) -> Optional[Dict[str, Tuple[np.ndarray, np.ndarray]]]:
+        """
+        Construye y resuelve el problema de optimización para cada cámara ≠ raíz.
+        Devuelve: dict camera_name -> (T_hat 4x4 de root->camera, Cov_hat 6x6)
+        """
+        with self.buffer_mutex_:
+            msgs = list(self.measurement_buffer_)
+        if len(msgs) == 0:
+            self.get_logger().warn("No hay mediciones en el buffer.")
+            return None
+
+        root = self.root_frame_id_
+        results: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
+
+        for cam in self.camera_names_:
+            if cam == root:
+                continue
+
+            Ts: List[np.ndarray] = []
+            Sigmas: List[np.ndarray] = []
+
+            # Recolecta todas las mediciones root<->cam (ambas direcciones)
+            for m in msgs:
+                if (m.camera_from_id == root and m.camera_to_id == cam) or \
+                   (m.camera_from_id == cam and m.camera_to_id == root):
+
+                    parsed = self._msg_to_T_Sigma(m)
+                    if parsed is None:
+                        continue
+                    T_meas, Sigma_meas = parsed
+
+                    if m.camera_from_id == root and m.camera_to_id == cam:
+                        # ya está como root->cam
+                        Ts.append(T_meas)
+                        Sigmas.append(Sigma_meas)
+                    else:
+                        # viene como cam->root: invertimos y transportamos covarianza
+                        T_inv = np.linalg.inv(T_meas)  # root->cam
+                        Ad = adjoint_SE3(T_inv)
+                        Sigma_inv = Ad @ Sigma_meas @ Ad.T
+                        Sigma_inv = 0.5*(Sigma_inv + Sigma_inv.T)
+                        Ts.append(T_inv)
+                        Sigmas.append(Sigma_inv)
+
+            if len(Ts) == 0:
+                self.get_logger().warn(f"Sin mediciones para par {root} -> {cam}.")
+                continue
+
+            try:
+                T_hat, Cov_hat, J = se3_average(
+                    Ts, Sigmas,
+                    loss=self.loss_, c=self.loss_c_,
+                    max_iters=80, tol=1e-10,
+                    meters_per_radian=(self.mpr_ if self.mpr_ > 0 else None)
+                )
+                results[cam] = (T_hat, Cov_hat)
+                e = se3_log(np.linalg.inv(T_hat) @ Ts[0])  # error vs primera med. (solo para log)
+                self.get_logger().info(
+                    f"[{root}->{cam}] {len(Ts)} meas | coste={J:.6f} | "
+                    f"||err_ref||={np.linalg.norm(e):.3e}"
+                )
+            except Exception as ex:
+                self.get_logger().error(f"Fallo optimizando {root}->{cam}: {ex}")
+
+        if len(results) == 0:
+            return None
+        return results
+
+    # ==========================
+    #  Publicación de /tf_static
+    # ==========================
+
+    def publish_static_transforms(self, optimized_poses_map: Dict[str, Tuple[np.ndarray, np.ndarray]]):
+        """
+        Publica las poses optimizadas (relativas a la raíz) como TFs estáticas.
+        """
+        tf_msg = TFMessage()
+        now = self.get_clock().now().to_msg()
+
+        root_link = self.camera_name_to_link_.get(self.root_frame_id_, self.root_frame_id_)
+
+        for cam, (T_hat, Cov_hat) in optimized_poses_map.items():
+            child_link = self.camera_name_to_link_.get(cam, cam)
+
+            ts = TransformStamped()
+            ts.header.stamp = now
+            ts.header.frame_id = root_link
+            ts.child_frame_id = child_link
+
+            t = T_hat[:3,3]
+            qx, qy, qz, qw = rotmat_to_quat(T_hat[:3,:3])
+
+            ts.transform.translation.x = float(t[0])
+            ts.transform.translation.y = float(t[1])
+            ts.transform.translation.z = float(t[2])
+            ts.transform.rotation.x = float(qx)
+            ts.transform.rotation.y = float(qy)
+            ts.transform.rotation.z = float(qz)
+            ts.transform.rotation.w = float(qw)
+
+            tf_msg.transforms.append(ts)
+
+        if tf_msg.transforms:
+            self.get_logger().info(f"Publicando {len(tf_msg.transforms)} TFs estáticas en /tf_static")
+            self.tf_static_pub_.publish(tf_msg)
+        else:
+            self.get_logger().warn("No hay TFs para publicar.")
+
+# --- Punto de Entrada ---
+def main(args=None):
+    rclpy.init(args=args)
+    node = None
     try:
+        node = ExtrinsicCalibrationOptimizer()
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
-    node.destroy_node()
-    rclpy.shutdown()
+    except Exception as e:
+        if node is not None:
+            node.get_logger().fatal(f"Error crítico: {e}")
+        else:
+            print(f"Error crítico al crear el nodo: {e}")
+    finally:
+        if node is not None:
+            node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+if __name__ == '__main__':
+    main()

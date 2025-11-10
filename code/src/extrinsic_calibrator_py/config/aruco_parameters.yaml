@@ -1,7 +1,0 @@
-aruco_params:
-  aruco_dict:
-    type: string
-    default_value: "DICT_5X5_250"
-  marker_length:
-    type: double
-    default_value: 0.025
