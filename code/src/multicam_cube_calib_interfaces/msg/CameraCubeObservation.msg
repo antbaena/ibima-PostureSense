@@ -1,0 +1,3 @@
+std_msgs/Header header
+string camera
+geometry_msgs/PoseWithCovariance t_cam_to_cube

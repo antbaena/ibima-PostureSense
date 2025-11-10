@@ -28,6 +28,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/CamerasMarkersList.msg"
   "msg/CubeObservation.msg"
   "msg/PairMeasurement.msg"
+  "msg/CameraPairPose.msg"
   DEPENDENCIES std_msgs geometry_msgs
 )
 
