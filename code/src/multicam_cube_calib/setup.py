@@ -23,15 +23,9 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'pair_builder_node = multicam_cube_calib.pair_builder_node:main',
-            'pair_builder_test_node = multicam_cube_calib.pair_builder_test_node:main',
             'extrinsics_optimizer_node = multicam_cube_calib.extrinsics_optimizer_node:main',
-            'cube_detector_node = multicam_cube_calib.cube_detector_node:main',
-            'cube_detector_unsync_node = multicam_cube_calib.cube_detector_unsync_node:main',
-            'calibration_manager_node = multicam_cube_calib.calibration_manager_node:main',
             'synchronized_pair_ICP_publisher_node = multicam_cube_calib.synchronized_pair_ICP_publisher_node:main',
             'synchronized_pair_PnP_publisher_node = multicam_cube_calib.synchronized_pair_PnP_publisher_node:main',
-            'multicam_cube_localizer = multicam_cube_calib.multicam_cube_localizer:main',
             'depth_to_pointcloud_plotter = multicam_cube_calib.depth_to_pointcloud_plotter:main',
             'pose_viz_node = multicam_cube_calib.pose_viz_node:main',
         ],
