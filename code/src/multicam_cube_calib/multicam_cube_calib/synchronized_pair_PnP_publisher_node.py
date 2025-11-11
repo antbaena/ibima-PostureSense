@@ -19,6 +19,10 @@ import cv2
 # Sincronización
 import message_filters
 import numpy as np
+
+import os
+import time
+
 from sensor_msgs.msg import Imu
 
 def _skew(v):
@@ -130,6 +134,12 @@ class SynchronizedPairPublisher(Node):
         self.use_camera_accel = self.get_parameter('use_camera_accel').value
         self.accel_alpha = self.get_parameter('accel_lpf_alpha').value
 
+        # === DEBUG MOSAICOS ===
+        self.debug_mosaic_dir = "/home/ubuntu/ibima-PostureSense/code/dump"  # <-- cámbiala a tu carpeta
+        os.makedirs(self.debug_mosaic_dir, exist_ok=True)
+        self._mosaic_counter = 0  # para nombres únicos si hace falta
+
+
         self.get_logger().info(f"Cámaras configuradas: {self.cameras}")
 
 
@@ -157,8 +167,11 @@ class SynchronizedPairPublisher(Node):
 
         # Puntos 3D del marcador (en su propio frame, Z=0)
         L = self.marker_length / 2.0
-        self.objp_marker_local = np.array([[-L, -L, 0], [ L, -L, 0], [ L,  L, 0], [-L,  L, 0]], dtype=np.float32)
-
+        # Asegurar el mismo orden que devuelve cv2.aruco: top-left, top-right, bottom-right, bottom-left
+        self.objp_marker_local = np.array([[-L,  L, 0],  # top-left
+                                        [ L,  L, 0],  # top-right
+                                        [ L, -L, 0],  # bottom-right
+                                        [-L, -L, 0]], dtype=np.float32)
         # ====== Estado ======
         self.infos = {}      # cam -> (K, D, (w,h))
         self.info_subs = {}  # cam -> Subscription
@@ -319,7 +332,7 @@ class SynchronizedPairPublisher(Node):
             self.get_logger().debug(f"Insuficientes detecciones: {len(poses_with_cov)} cámaras (mínimo 2)")
             return
 
-        self.get_logger().debug(f"Generando pares con {len(poses_with_cov)} cámaras: {list(poses_with_cov.keys())}")
+        self.get_logger().info(f"Generando pares con {len(poses_with_cov)} cámaras: {list(poses_with_cov.keys())}")
 
         # 3. Generar y publicar todos los pares posibles
         cams = list(poses_with_cov.keys())
@@ -503,6 +516,7 @@ class SynchronizedPairPublisher(Node):
         all_image_points = []
         valid_marker_ids = []
 
+
         for marker_id, marker_corners in zip(ids.flatten(), corners):
             T_marker_to_cube = self.marker_to_cube_tf.get(marker_id)
             if T_marker_to_cube is None:
@@ -516,10 +530,10 @@ class SynchronizedPairPublisher(Node):
             all_object_points.append(objp_cube_homog[:, :3])
             all_image_points.append(marker_corners.reshape(-1, 2))
             valid_marker_ids.append(marker_id)
-            break
-            if len(valid_marker_ids) >= 1:
-                break  # Usamos solo los dos primeros marcadores válidos para evitar sobrecarga
-            
+
+        #TODO FIX: Hay un bug raro que hace que si se ve el marcador 0 o 5, PnP falle, corregir en el yaml
+        if 0 in valid_marker_ids or 5 in valid_marker_ids:
+            return None, None  # Debug: ignorar si se ve el marcador 0
         
         #TODO: Modificar para usar SOLO los marcadores que tengan buena visibilidad segun angulo y distancia
         # Necesitamos al menos 4 puntos (un marcador)
@@ -528,49 +542,65 @@ class SynchronizedPairPublisher(Node):
             return None, None
         
         #Debug
-        if len(valid_marker_ids) >= 2:
-            self.get_logger().debug(f"Marcadores válidos para PnP: {valid_marker_ids}======================================================================\n\n")
+        # if len(valid_marker_ids) == 1:
+        #     return None, None  # Forzar al menos 2 marcadores para debug
             
-
-
-
         self.get_logger().debug(f"Usando {len(valid_marker_ids)} marcadores válidos: {valid_marker_ids}")
             
         final_obj_pts = np.vstack(all_object_points).astype(np.float32)
         final_img_pts = np.vstack(all_image_points).astype(np.float32)
-        self.get_logger().debug(f"Total de puntos para PnP: {len(final_obj_pts)} puntos 3D")
-
-        # 1. Resolver PnP robusto UNA SOLA VEZ para T_cam_to_cube
+        
         self.get_logger().debug("Resolviendo PnP...")
-        try:
-            ok, rvec, tvec = cv2.solvePnP(
-                final_obj_pts, final_img_pts, K, D, flags=cv2.SOLVEPNP_ITERATIVE
+        
+        if len(valid_marker_ids) == 1:
+            mid = valid_marker_ids[0]
+            img_pts = all_image_points[0]            # (4,2) de ese marcador
+            T_m_c = self.marker_to_cube_tf[mid]
+            T_cam_cube_ippe = self._pnp_ippe_disambiguate(
+                self.objp_marker_local, img_pts, K, D, T_m_c, debug_img=cv_img
             )
-            if not ok:
-                self.get_logger().debug("solvePnP retornó ok=False")
+            if T_cam_cube_ippe is None:
+                self.get_logger().warning("IPPE no pudo desambiguar; saltando frame.")
                 return None, None
-        except Exception as e:
-            self.get_logger().warning(f"solvePnP falló: {e}")
-            return None, None
+
+            T_cam_cube = T_cam_cube_ippe
+
+            # (opcional) estima covarianza igual que ya haces, proyectando final_obj_pts/final_img_pts
+            # Para mantener tu pipeline, define:
+            rvec, _ = cv2.Rodrigues(T_cam_cube[:3,:3])
+            tvec = T_cam_cube[:3,3].reshape(3,1)
+
+        else:
+            try:
+                ok, rvec, tvec = cv2.solvePnP(
+                    final_obj_pts, final_img_pts, K, D, flags=cv2.SOLVEPNP_ITERATIVE
+                )
+                if not ok:
+                    self.get_logger().debug("solvePnP retornó ok=False")
+                    return None, None
+            except Exception as e:
+                self.get_logger().warning(f"solvePnP falló: {e}")
+                return None, None
+
+            # Convertir a matriz 4x4
+            R_cam_cube, _ = cv2.Rodrigues(rvec)
+            T_cam_cube = np.eye(4)
+            T_cam_cube[:3, :3] = R_cam_cube
+            T_cam_cube[:3, 3] = tvec.flatten()
 
         self.get_logger().debug(f"PnP exitoso - tvec: {tvec.flatten()}, rvec: {rvec.flatten()}")
 
-        # Convertir a matriz 4x4
-        R_cam_cube, _ = cv2.Rodrigues(rvec)
-        T_cam_cube = np.eye(4)
-        T_cam_cube[:3, :3] = R_cam_cube
-        T_cam_cube[:3, 3] = tvec.flatten()
 
         # 2. Estimar Covarianza (Heurística Mejorada)
         self.get_logger().debug("Calculando error de reproyección y covarianza...")
         proj_pts, _ = cv2.projectPoints(final_obj_pts, rvec, tvec, K, D)
-        reproj_errors = np.linalg.norm(proj_pts.reshape(-1, 2) - final_img_pts.reshape(-1, 2), axis=1)
-        reproj_err_px = np.mean(reproj_errors)
-        reproj_err_max = np.max(reproj_errors)
+        reproj_errors = np.linalg.norm(proj_pts.reshape(-1,2) - final_img_pts.reshape(-1,2), axis=1)
+        reproj_err_px = float(np.mean(reproj_errors))
+        reproj_err_max = float(np.max(reproj_errors))
         num_points = len(final_obj_pts)
 
         self.get_logger().debug(f"Error de reproyección - medio: {reproj_err_px:.3f} px, máximo: {reproj_err_max:.3f} px")
-
+        
         # La "calidad" es inversamente proporcional al error al cuadrado
         # y proporcional al número de puntos.
         quality = float(num_points) / max(1e-3, reproj_err_px**2)
@@ -586,10 +616,294 @@ class SynchronizedPairPublisher(Node):
         self.get_logger().debug(f"Varianzas finales - var_xy: {var_xy:.6f}, var_z: {var_z:.6f}, var_r: {var_r:.6f}")
         self.get_logger().debug(f"Escala de varianza: {var_scale:.6f}")
 
+
+
+
+        # ====== DEBUG: Guardar mosaico explicativo ======
+        try:
+            # --- Helpers ---
+            def put_banner(im, text):
+                # Pequeño rótulo arriba-izquierda
+                pad = 6
+                (w,h), baseline = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.62, 2)
+                cv2.rectangle(im, (4,4), (4+w+2*pad, 4+h+2*pad), (0,0,0), -1)
+                cv2.putText(im, text, (4+pad, 4+h+pad-1),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.62, (255,255,255), 2, cv2.LINE_AA)
+
+            def put_metrics(im, y0=28):
+                lines = [
+                    f"pts={num_points}",
+                    f"reproj mean={reproj_err_px:.2f}px",
+                    f"reproj max={reproj_err_max:.2f}px",
+                ]
+                y = y0
+                for t in lines:
+                    cv2.putText(im, t, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255,255,255), 2, cv2.LINE_AA)
+                    cv2.putText(im, t, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0,0,0), 1, cv2.LINE_AA)
+                    y += 20
+
+            def _resize_to_height(img, h):
+                h0, w0 = img.shape[:2]
+                if h0 == h:
+                    return img
+                s = h / float(h0)
+                return cv2.resize(img, (int(round(w0*s)), h), interpolation=cv2.INTER_AREA)
+
+            def _pad_to_width(img, w):
+                h, ww = img.shape[:2]
+                if ww == w: return img
+                pad = w - ww
+                return cv2.copyMakeBorder(img, 0, 0, 0, pad, cv2.BORDER_CONSTANT, value=(30,30,30))
+
+            def err_color(e, emax=5.0):
+                # verde->rojo según magnitud del error (px)
+                t = float(np.clip(e/emax, 0.0, 1.0))
+                return (0, int(255*(1.0 - t)), int(255*t))
+
+            # --- Base BGR para dibujar ---
+            base_bgr = cv_img.copy()
+            if base_bgr.ndim == 2:
+                base_bgr = cv2.cvtColor(base_bgr, cv2.COLOR_GRAY2BGR)
+
+            # 1) ORIGINAL
+            p1 = base_bgr.copy()
+            put_banner(p1, "1) ORIGINAL")
+            put_metrics(p1)
+
+            # 2) ARUCO DETECTADO
+            p2 = base_bgr.copy()
+            try:
+                if ids is not None and len(ids) > 0:
+                    cv2.aruco.drawDetectedMarkers(p2, corners, ids)
+            except Exception:
+                pass
+            put_banner(p2, "2) ARUCO DETECTADO")
+            put_metrics(p2)
+
+            # 3) ENTRADA A PnP (esquinas usadas)
+            #    Dibuja únicamente los puntos 2D efectivamente usados por solvePnP (final_img_pts)
+            p3 = base_bgr.copy()
+            try:
+                pts_meas = final_img_pts.reshape(-1, 2)
+                for i, (u,v) in enumerate(pts_meas):
+                    c = (int(round(u)), int(round(v)))
+                    cv2.circle(p3, c, 3, (0,255,0), -1)
+                    cv2.putText(p3, str(i), (c[0]+4, c[1]-4),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0,0,0), 2, cv2.LINE_AA)
+                    cv2.putText(p3, str(i), (c[0]+4, c[1]-4),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255,255,255), 1, cv2.LINE_AA)
+                # Si eran justo 4 puntos (un marcador), dibuja el contorno
+                if pts_meas.shape[0] >= 4:
+                    q = pts_meas[:4].astype(int)
+                    for a,b in zip([0,1,2,3],[1,2,3,0]):
+                        cv2.line(p3, tuple(q[a]), tuple(q[b]), (200,200,0), 2)
+            except Exception:
+                pass
+            put_banner(p3, "3) ENTRADA a PnP (esquinas)")
+
+            # 4) SALIDA PnP (ejes y resumen rvec/tvec)
+            p4 = base_bgr.copy()
+            try:
+                # ancla ejes al centro del primer marcador usado (primeros 4 pts 3D)
+                axis_len = float(self.marker_length) * 0.5
+                obj_marker = final_obj_pts[:4, :].astype(np.float32)  # 4x3
+                Pc = obj_marker.mean(axis=0).astype(np.float32)       # centro
+
+                triad_obj = np.vstack([
+                    Pc,
+                    Pc + axis_len*np.array([-1,0,0], np.float32),
+                    Pc + axis_len*np.array([0,1,0], np.float32),
+                    Pc + axis_len*np.array([0,0,1], np.float32),
+                ]).astype(np.float32)
+
+                triad_img, _ = cv2.projectPoints(triad_obj, rvec, tvec, K, D)
+                triad_img = triad_img.reshape(-1,2).astype(int)
+                p0, px, py, pz = map(tuple, triad_img)
+                cv2.circle(p4, p0, 3, (255,255,255), -1)
+                cv2.line(p4, p0, px, (0,0,255), 2)   # X rojo
+                cv2.line(p4, p0, py, (0,255,0), 2)   # Y verde
+                cv2.line(p4, p0, pz, (255,0,0), 2)   # Z azul
+
+                # ======== NUEVO: proyectar y dibujar el origen del frame del CUBO ========
+                # El origen del cubo en coords del cubo es (0,0,0).
+                cube_origin_obj = np.array([[0.0, 0.0, 0.0]], dtype=np.float32)  # (1,3)
+                cube_origin_img, _ = cv2.projectPoints(cube_origin_obj, rvec, tvec, K, D)
+                u, v = cube_origin_img.reshape(-1, 2)[0]
+                cxy = (int(round(u)), int(round(v)))
+                # Punto y etiqueta
+                cv2.putText(p4, f"px=({cxy[0]},{cxy[1]})", (cxy[0]+8, cxy[1]+8),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0,0,0), 2, cv2.LINE_AA)
+                cv2.putText(p4, f"px=({cxy[0]},{cxy[1]})", (cxy[0]+8, cxy[1]+8),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255,255,255), 1, cv2.LINE_AA)
+                cv2.circle(p4, cxy, 6, (255, 0, 255), -1)  # magenta
+                cv2.putText(p4, "CUBE_ORIGIN", (cxy[0]+8, cxy[1]-8),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,0), 2, cv2.LINE_AA)
+                cv2.putText(p4, "CUBE_ORIGIN", (cxy[0]+8, cxy[1]-8),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1, cv2.LINE_AA)
+                # Dibujar las 8 esquinas del cubo
+                # Asumiendo un cubo centrado en el origen con lado = marker_length
+                half_side = float(self.marker_length) / 2.0
+                cube_corners_obj = np.array([
+                    [-half_side, -half_side, -half_side],
+                    [ half_side, -half_side, -half_side],
+                    [ half_side,  half_side, -half_side],
+                    [-half_side,  half_side, -half_side],
+                    [-half_side, -half_side,  half_side],
+                    [ half_side, -half_side,  half_side],
+                    [ half_side,  half_side,  half_side],
+                    [-half_side,  half_side,  half_side],
+                ], dtype=np.float32)
+
+                cube_corners_img, _ = cv2.projectPoints(cube_corners_obj, rvec, tvec, K, D)
+                cube_corners_img = cube_corners_img.reshape(-1, 2).astype(int)
+
+                for idx, corner in enumerate(cube_corners_img):
+                    pt = tuple(corner)
+                    cv2.circle(p4, pt, 4, (0, 255, 255), -1)  # cyan
+                    cv2.putText(p4, str(idx), (pt[0]+5, pt[1]-5),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0,0,0), 2, cv2.LINE_AA)
+                    cv2.putText(p4, str(idx), (pt[0]+5, pt[1]-5),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0,255,255), 1, cv2.LINE_AA)
+                # ======== FIN NUEVO ========
+
+                # resumen rot/trans
+                r_angle = np.linalg.norm(rvec.reshape(-1)) * 180.0/np.pi
+                t_norm  = float(np.linalg.norm(tvec.reshape(-1)))
+                lines = [f"|r|~{r_angle:.1f} deg", f"||t||~{t_norm:.3f} m"]
+                y = 28
+                for tline in lines:
+                    cv2.putText(p4, tline, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255,255,255), 2, cv2.LINE_AA)
+                    cv2.putText(p4, tline, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0,0,0), 1, cv2.LINE_AA)
+                    y += 20
+            except Exception:
+                pass
+            put_banner(p4, "4) SALIDA PnP (ejes)")
+
+
+            # 5) projectPoints: entrada/salida (medidos vs reproyectados)
+            p5 = base_bgr.copy()
+            try:
+                pts_meas = final_img_pts.reshape(-1, 2)
+                pts_proj = proj_pts.reshape(-1, 2)
+                for (u,v), (up,vp), e in zip(pts_meas, pts_proj, reproj_errors):
+                    pm = (int(round(u)),  int(round(v)))
+                    pp = (int(round(up)), int(round(vp)))
+                    cv2.circle(p5, pm, 3, (0,255,0), -1)  # medido (verde)
+                    cv2.circle(p5, pp, 3, (0,0,255), -1)  # reproyectado (rojo)
+                    cv2.line(p5, pm, pp, err_color(float(e)), 2)
+            except Exception:
+                pass
+            put_banner(p5, "5) projectPoints (in/out)")
+
+            # --- Preparar mosaico: 5 paneles -> 2 filas (3 + 2) ---
+            panels = [p1, p2, p3, p4, p5]
+            tile_h = 480
+            panels = [_resize_to_height(im, tile_h) for im in panels]
+
+            # fila 1: 3 columnas, fila 2: 2 columnas
+            row1 = cv2.hconcat(panels[:3])
+            row2 = cv2.hconcat(panels[3:])
+
+            # igualar anchos para vconcat
+            maxw = max(row1.shape[1], row2.shape[1])
+            row1 = _pad_to_width(row1, maxw)
+            row2 = _pad_to_width(row2, maxw)
+            mosaic = cv2.vconcat([row1, row2])
+
+            # Guardar PNG
+            self._mosaic_counter += 1
+            t_ms = int(time.time() * 1000)
+            fname = f"mosaic_{t_ms}_{self._mosaic_counter:06d}.png"
+            out_path = os.path.join(self.debug_mosaic_dir, fname)
+            ok = cv2.imwrite(out_path, mosaic)
+            if not ok:
+                self.get_logger().warning(f"No se pudo guardar mosaico en {out_path}")
+            else:
+                self.get_logger().debug(f"Mosaico guardado en {out_path}")
+        except Exception as e:
+            self.get_logger().warning(f"Error creando/guardando mosaico debug: {e}")
+        # ====== FIN DEBUG MOSAICO ======
+
+
+
+
+
+
+
+
         cov_matrix = np.diag([var_xy, var_xy, var_z, var_r, var_r, var_r])
         
         return T_cam_cube, cov_matrix
+    
+    def _pnp_ippe_disambiguate(self, objp_marker_local, img_pts, K, D, T_marker_to_cube, debug_img=None):
+        ok, rvecs, tvecs, reproj = cv2.solvePnPGeneric(
+            objp_marker_local.astype(np.float32),
+            img_pts.astype(np.float32),
+            K, D,
+            flags=cv2.SOLVEPNP_IPPE_SQUARE
+        )
+        if not ok or len(rvecs) == 0:
+            return None
 
+        best = None
+        best_score = -1e9
+        z_minus = np.array([0.0, 0.0, -1.0])  # -Z del marcador
+
+        # Precalcula inversas del marker->cubo
+        T_m_c = T_marker_to_cube
+        R_m_c = T_m_c[:3,:3]; t_m_c = T_m_c[:3,3]
+        R_c_m = R_m_c.T
+        t_c_m = -R_m_c.T @ t_m_c  # inv(T_marker_to_cube)
+        
+        # Colores diferentes para cada solución IPPE
+        colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0)]  # azul, verde, rojo, amarillo
+        
+        for idx, (rvec, tvec) in enumerate(zip(rvecs, tvecs)):
+            R_cam_marker, _ = cv2.Rodrigues(rvec)
+            # ¿hacia dónde va -Z_marker en cámara?
+            v_cam = R_cam_marker @ z_minus
+            # Queremos que apunte hacia +Z cámara ( > 0 )
+            score = float(v_cam[2])
+
+            if score > best_score:
+                best_score = score
+                # compón T_cam_cube
+                T_cam_cube = np.eye(4)
+                T_cam_cube[:3,:3] = R_cam_marker @ R_m_c
+                T_cam_cube[:3, 3] = R_cam_marker @ t_m_c + tvec.reshape(3)
+                best = T_cam_cube
+            
+            if debug_img is not None:
+                accumulated_debug = debug_img.copy()
+                color = colors[idx % len(colors)]
+                
+                half_side = float(self.marker_length) / 2.0
+                cube_corners_obj = np.array([
+                    [-half_side, -half_side, -half_side],
+                    [ half_side, -half_side, -half_side],
+                    [ half_side,  half_side, -half_side],
+                    [-half_side,  half_side, -half_side],
+                    [-half_side, -half_side,  half_side],
+                    [ half_side, -half_side,  half_side],
+                    [ half_side,  half_side,  half_side],
+                    [-half_side,  half_side,  half_side],
+                ], dtype=np.float32)
+
+                cube_corners_img, _ = cv2.projectPoints(cube_corners_obj, rvec, tvec, K, D)
+                cube_corners_img = cube_corners_img.reshape(-1, 2).astype(int)
+
+                for corner_idx, corner in enumerate(cube_corners_img):
+                    pt = tuple(corner)
+                    cv2.circle(accumulated_debug, pt, 4, color, -1)
+                    cv2.putText(accumulated_debug, str(corner_idx), (pt[0]+5, pt[1]-5),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0,0,0), 2, cv2.LINE_AA)
+                    cv2.putText(accumulated_debug, str(corner_idx), (pt[0]+5, pt[1]-5),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1, cv2.LINE_AA)
+                
+                t_ms = int(time.time() * 1000)
+                cv2.imwrite(f"/home/ubuntu/ibima-PostureSense/code/dump/2/debug_ippe_option_{t_ms}_{idx}_score_{score:.2f}.png", accumulated_debug)
+
+        return best
     def publish_pair_pose(self, ci: str, cj: str, Tij: np.ndarray, Cov_ij: np.ndarray, header):
         """Publica el mensaje final que espera el backend."""
         
