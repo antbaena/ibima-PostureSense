@@ -7,6 +7,9 @@ from rclpy.qos import QoSProfile, DurabilityPolicy
 import threading
 import numpy as np
 from typing import Dict, List, Tuple, Optional
+import json
+from datetime import datetime
+import os
 
 # Mensajes
 from multicam_cube_calib_interfaces.msg import CameraPairPose
@@ -264,13 +267,14 @@ class ExtrinsicCalibrationOptimizer(Node):
         super().__init__('extrinsic_calibration_optimizer')
 
         # --- Parámetros ---
-        self.declare_parameter('root_frame_id', 'cam01/camera_02')
-        self.declare_parameter('camera_names', ['cam01/camera_02', 'cam02/camera_03'])
-        self.declare_parameter('link_names', ['camera_02_color_optical_frame', 'camera_03_color_optical_frame'])
+        self.declare_parameter('root_frame_id', 'cam00/camera_00')
+        self.declare_parameter('camera_names', ['cam00/camera_00', 'cam00/camera_01'])
+        self.declare_parameter('link_names', ['camera_00_color_optical_frame', 'camera_01_color_optical_frame'])
         self.declare_parameter('input_topic', '/calib/pairs_posecov')
         self.declare_parameter('loss', 'huber')        # 'huber'|'cauchy'|'tukey'|'none'
         self.declare_parameter('loss_c', 1.5)
         self.declare_parameter('meters_per_radian', 0.0)  # 0.0 => desactivado
+        self.declare_parameter('output_dir', '/home/ubuntu/ibima-PostureSense/calib')  # Directorio donde guardar las TFs
 
         self.root_frame_id_ = self.get_parameter('root_frame_id').value
         self.camera_names_ = self.get_parameter('camera_names').value
@@ -279,6 +283,7 @@ class ExtrinsicCalibrationOptimizer(Node):
         self.loss_ = self.get_parameter('loss').value
         self.loss_c_ = float(self.get_parameter('loss_c').value)
         self.mpr_ = float(self.get_parameter('meters_per_radian').value)
+        self.output_dir_ = self.get_parameter('output_dir').value
 
         if len(self.link_names_) != len(self.camera_names_):
             self.get_logger().fatal("'camera_names' y 'link_names' deben tener la misma longitud")
@@ -333,8 +338,12 @@ class ExtrinsicCalibrationOptimizer(Node):
         if optimized_poses_map is not None:
             self.get_logger().info("Optimización exitosa.")
             self.publish_static_transforms(optimized_poses_map)
+            
+            # Guardar las TFs en un archivo
+            saved_file = self.save_transforms_to_file(optimized_poses_map)
+            
             response.success = True
-            response.message = "Optimización completada. TFs publicadas."
+            response.message = f"Optimización completada. TFs publicadas y guardadas en: {saved_file}"
         else:
             self.get_logger().error("La optimización falló.")
             response.success = False
@@ -472,6 +481,56 @@ class ExtrinsicCalibrationOptimizer(Node):
             self.tf_static_pub_.publish(tf_msg)
         else:
             self.get_logger().warn("No hay TFs para publicar.")
+
+    def save_transforms_to_file(self, optimized_poses_map: Dict[str, Tuple[np.ndarray, np.ndarray]]) -> str:
+        """
+        Guarda las transformaciones optimizadas en un archivo JSON.
+        """
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"calibration_transforms_{timestamp}.json"
+        filepath = os.path.join(self.output_dir_, filename)
+        
+        # Crear el directorio si no existe
+        os.makedirs(self.output_dir_, exist_ok=True)
+        
+        root_link = self.camera_name_to_link_.get(self.root_frame_id_, self.root_frame_id_)
+        
+        data = {
+            "timestamp": timestamp,
+            "root_frame": root_link,
+            "transforms": []
+        }
+        
+        for cam, (T_hat, Cov_hat) in optimized_poses_map.items():
+            child_link = self.camera_name_to_link_.get(cam, cam)
+            
+            t = T_hat[:3, 3]
+            qx, qy, qz, qw = rotmat_to_quat(T_hat[:3, :3])
+            
+            transform_data = {
+                "child_frame": child_link,
+                "camera_name": cam,
+                "translation": {
+                    "x": float(t[0]),
+                    "y": float(t[1]),
+                    "z": float(t[2])
+                },
+                "rotation": {
+                    "x": float(qx),
+                    "y": float(qy),
+                    "z": float(qz),
+                    "w": float(qw)
+                },
+                "covariance": Cov_hat.flatten().tolist(),
+                "transform_matrix": T_hat.tolist()
+            }
+            data["transforms"].append(transform_data)
+        
+        with open(filepath, 'w') as f:
+            json.dump(data, f, indent=2)
+        
+        self.get_logger().info(f"Transformaciones guardadas en: {filepath}")
+        return filepath
 
 # --- Punto de Entrada ---
 def main(args=None):
