@@ -3,9 +3,16 @@
 <package format="3">
   <name>camera_postprocess</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
+  <description>Camera postprocessing nodes: image saving, MoveNet 3D skeleton, and preview republisher for bandwidth reduction</description>
   <maintainer email="antoniocanetebaena1234@gmail.com">cam</maintainer>
   <license>TODO: License declaration</license>
+
+  <depend>rclpy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>visualization_msgs</depend>
+  <depend>cv_bridge</depend>
+  <depend>message_filters</depend>
+  <depend>geometry_msgs</depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

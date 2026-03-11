@@ -22,8 +22,9 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'movenet_3d_node = camera_postprocess.movenet_3d_node:main',   
+            'movenet_3d_node = camera_postprocess.movenet_3d_node:main',
             'image_saver_node = camera_postprocess.image_saver_node:main',
-                     ],
+            'preview_republisher = camera_postprocess.preview_republisher_node:main',
+        ],
     },
 )

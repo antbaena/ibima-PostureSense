@@ -60,9 +60,19 @@ void DepthDecompressor::topic_callback(const sensor_msgs::msg::CompressedImage::
       throw std::runtime_error("Compression type is not 'compressedDepth'. Found: '" + compression_info + "'");
     }
 
+    // The compressedDepth format from image_transport prepends a 12-byte header:
+    //   bytes 0-3:  int   compression_format  (0 = PNG, 1 = RVL)
+    //   bytes 4-7:  float depthQuantA          (only used for 32FC1)
+    //   bytes 8-11: float depthQuantB          (only used for 32FC1)
+    // This is defined in image_transport_plugins/compressed_depth_image_transport.
+    // If image_transport version changes this layout, update depth_header_size.
     const size_t depth_header_size = 12;
     if (msg->data.size() <= depth_header_size) {
-      throw std::runtime_error("Compressed depth message too small.");
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+        "Compressed depth message too small (%zu bytes, need >%zu). "
+        "Check image_transport compressedDepth header format.",
+        msg->data.size(), depth_header_size);
+      return;
     }
 
     // Remove header

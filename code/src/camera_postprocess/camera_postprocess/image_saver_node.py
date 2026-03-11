@@ -2,7 +2,8 @@
 
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import Image
+from rclpy.qos import qos_profile_sensor_data
+from sensor_msgs.msg import CompressedImage
 from cv_bridge import CvBridge
 import cv2 as cv
 import os
@@ -12,9 +13,9 @@ class ImageSaverNode(Node):
         super().__init__('dataset_recorder')
 
         # Parámetros configurables
-        self.declare_parameter('camera_names', ['camera_01', 'camera_02', 'camera_03', 'camera_04'])
-        self.declare_parameter('topic_suffix', '/color/image_raw')
-        self.declare_parameter('save_dir', os.path.expanduser('/home/mapir/ibima-PostureSense/code/src/camera_postprocess/camera_postprocess/dataset'))
+        self.declare_parameter('camera_names', ['cam00/camera_00', 'cam00/camera_01', 'cam01/camera_02', 'cam02/camera_03'])
+        self.declare_parameter('topic_suffix', '/color/image_raw/compressed')
+        self.declare_parameter('save_dir', os.path.expanduser('/home/ant/ibima-PostureSense/code/src/camera_postprocess/camera_postprocess/dataset'))
         self.declare_parameter('save_interval', 2.0)  # segundos
         self.declare_parameter('queue_size', 10)
 
@@ -36,28 +37,30 @@ class ImageSaverNode(Node):
         # Diccionario: camera_name -> (cv_img, timestamp_str)
         self.latest = {name: (None, None) for name in self.camera_names}
 
-        # Suscripciones a cada tópico de imagen
+        # Suscripciones a cada tópico de imagen comprimida
+        # Usar sensor_data QoS (BEST_EFFORT) para compatibilidad con el driver de cámara
         for name in self.camera_names:
             topic = f"/{name}{self.topic_suffix}"
             self.create_subscription(
-                Image,
+                CompressedImage,
                 topic,
                 self._make_image_cb(name),
-                self.queue_size
+                qos_profile_sensor_data
             )
-            self.get_logger().info(f'Subscrito a {topic}')
+            self.get_logger().info(f'Subscrito a {topic} como CompressedImage')
 
         # Timer para guardar cada intervalo
         self.create_timer(self.save_interval, self.save_images)
         self.get_logger().info(f'Guardando imágenes cada {self.save_interval}s')
 
     def _make_image_cb(self, name):
-        def callback(msg: Image):
-            # Convertir y almacenar imagen y timestamp del mensaje
+        def callback(msg: CompressedImage):
+            # Convertir y almacenar imagen y timestamp del mensaje comprimido
             try:
-                cv_img = self.bridge.imgmsg_to_cv2(msg, 'bgr8')
+                # Para mensajes CompressedImage
+                cv_img = self.bridge.compressed_imgmsg_to_cv2(msg, 'bgr8')
             except Exception as e:
-                self.get_logger().error(f'Error al convertir imagen de {name}: {e}')
+                self.get_logger().error(f'Error al convertir imagen comprimida de {name}: {e}')
                 return
 
             t = msg.header.stamp
@@ -77,7 +80,6 @@ class ImageSaverNode(Node):
             if not os.path.exists(filename):
                 cv.imwrite(filename, img)
                 self.get_logger().info(f'Guardada {name}: {filename}')
-
 
 def main(args=None):
     rclpy.init(args=args)

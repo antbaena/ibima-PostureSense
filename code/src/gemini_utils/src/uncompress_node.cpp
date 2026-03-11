@@ -36,9 +36,22 @@ Uncompressor::Uncompressor(const rclcpp::NodeOptions & options)
 void Uncompressor::topic_callback(const sensor_msgs::msg::CompressedImage::ConstSharedPtr msg)
 {
   try {
+    if (msg->data.empty()) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+        "Received empty compressed image on '%s'", input_topic_.c_str());
+      return;
+    }
+
     // Convert buffer to cv::Mat
     std::vector<uint8_t> buf(msg->data.begin(), msg->data.end());
     cv::Mat image = cv::imdecode(buf, cv::IMREAD_COLOR);
+
+    if (image.empty()) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+        "imdecode returned empty Mat — corrupt or unsupported JPEG frame on '%s'",
+        input_topic_.c_str());
+      return;
+    }
 
     auto img_msg = cv_bridge::CvImage(msg->header, "bgr8", image).toImageMsg();
     pub_->publish(*img_msg);
