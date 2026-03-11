@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Cyclone DDS configuration for IbimaCam multi-camera mocap system.
+
+  Optimised for streaming CompressedImage (MJPG) and CompressedDepth
+  across 2-3 Raspberry Pi nodes over a 100 Mbit Ethernet LAN.
+
+  Usage:
+    export CYCLONEDDS_URI=file://$(pwd)/cyclonedds.xml
+    export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+
+  Or in a launch file:
+    SetEnvironmentVariable('CYCLONEDDS_URI', 'file:///path/to/cyclonedds.xml')
+
+  Reference:
+    https://docs.ros.org/en/humble/Installation/DDS-Implementations/Working-with-Eclipse-CycloneDDS.html
+    https://cyclonedds.io/docs/
+-->
+<CycloneDDS xmlns="https://cdds.io/config"
+            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+            xsi:schemaLocation="https://cdds.io/config https://raw.githubusercontent.com/eclipse-cyclonedds/cyclonedds/master/etc/cyclonedds.xsd">
+  <Domain id="any">
+
+    <General>
+      <!--
+        NetworkInterfaceAddress: bind to the wired Ethernet interface.
+        Adjust to match your interface name (eth0, enp*, eno*, etc.).
+        Use "auto" if there's only one interface.
+      -->
+      <NetworkInterfaceAddress>auto</NetworkInterfaceAddress>
+
+      <!--
+        MaxMessageSize: increase for large images.
+        Default is 65500; compressed JPEG frames can exceed this.
+        Set to max UDP payload for fragmented messages.
+      -->
+      <MaxMessageSize>65500</MaxMessageSize>
+
+      <!--
+        FragmentSize: keep at default for 100 Mbit Ethernet.
+        Larger fragments reduce overhead but increase loss risk.
+      -->
+      <FragmentSize>4000</FragmentSize>
+    </General>
+
+    <Internal>
+      <!--
+        Increase socket receive buffer to prevent drops when
+        multiple cameras publish simultaneously.
+        8 MB should handle burst traffic from 4 cameras.
+      -->
+      <SocketReceiveBufferSize min="8MB"/>
+
+      <!--
+        Write cache: each participant can have outstanding
+        data up to this limit. 8 MB allows for several
+        queued compressed frames per camera.
+      -->
+      <WriterLingerDuration>0s</WriterLingerDuration>
+
+      <!--
+        Reduce heartbeat and nack intervals for faster
+        RELIABLE data recovery (used by calibration nodes).
+      -->
+      <HeartbeatInterval isattr="true">50ms</HeartbeatInterval>
+      <NackDelay>10ms</NackDelay>
+
+      <!--
+        Reduce latency budget for BEST_EFFORT sensor streams.
+      -->
+      <LeaseDuration>10s</LeaseDuration>
+    </Internal>
+
+    <!--
+      Discovery: multicast on the default group address.
+      All hosts on the same LAN segment will discover each other.
+    -->
+    <Discovery>
+      <ParticipantIndex>auto</ParticipantIndex>
+    </Discovery>
+
+    <Tracing>
+      <Verbosity>warning</Verbosity>
+      <OutputFile>cyclonedds.log</OutputFile>
+    </Tracing>
+
+  </Domain>
+</CycloneDDS>
