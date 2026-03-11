@@ -1,0 +1,4 @@
+output_bags:
+  - uri: /home/ant/ibima-PostureSense/bag_20251127_130057_local_merged
+  storage_id: mcap
+  all_topics: true
