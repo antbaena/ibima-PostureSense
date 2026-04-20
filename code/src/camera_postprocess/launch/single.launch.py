@@ -19,8 +19,10 @@ def generate_launch_description():
                                           description='Sync mode: standalone/primary/secondary')
     color_fps_arg = DeclareLaunchArgument('color_fps', default_value='30')
     depth_fps_arg = DeclareLaunchArgument('depth_fps', default_value='30')
-    color_width_arg = DeclareLaunchArgument('color_width', default_value='640')
-    color_height_arg = DeclareLaunchArgument('color_height', default_value='480')
+    # 1280x720 chosen for offline MediaPipe Pose at ~4 m (subject ~432 px tall).
+    # Verified stable on Gemini 330 + RPi 5: 30 Hz, 4.5 MB/s MJPG, 0 frame drops.
+    color_width_arg = DeclareLaunchArgument('color_width', default_value='1280')
+    color_height_arg = DeclareLaunchArgument('color_height', default_value='720')
     depth_width_arg = DeclareLaunchArgument('depth_width', default_value='640')
     depth_height_arg = DeclareLaunchArgument('depth_height', default_value='480')
     preview_fps_arg = DeclareLaunchArgument('preview_fps', default_value='5.0')
